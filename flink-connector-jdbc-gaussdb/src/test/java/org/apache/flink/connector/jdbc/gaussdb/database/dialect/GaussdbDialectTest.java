@@ -63,7 +63,7 @@ class GaussdbDialectTest extends JdbcDialectTest implements GaussdbTestBase {
                         "The Gaussdb dialect doesn't support type: VARBINARY(10)."),
                 createTestItem(
                         "TIMESTAMP(9) WITHOUT TIME ZONE",
-                        "The precision of field 'f0' is out of the TIMESTAMP precision range [1, 6] supported by Gaussdb dialect."),
+                        "The precision of field 'f0' is out of the TIMESTAMP precision range [0, 6] supported by Gaussdb dialect."),
                 createTestItem("TIMESTAMP_LTZ(3)", "Unsupported type:TIMESTAMP_LTZ(3)"));
     }
 
