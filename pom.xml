@@ -558,6 +558,41 @@ under the License.
                                 <keepStagingRepositoryOnFailure>true</keepStagingRepositoryOnFailure>
                             </configuration>
                         </plugin>
+
+                        <plugin>
+                            <groupId>org.apache.maven.plugins</groupId>
+                            <artifactId>maven-javadoc-plugin</artifactId>
+                            <version>3.6.3</version>
+                            <configuration>
+                                <failOnError>false</failOnError>
+                                <sourceFileIncludes>
+                                    <fileInclude>**/*GaussDB*</fileInclude>
+                                </sourceFileIncludes>
+                                <overview>${basedir}/nonexistent-overview.html</overview>
+                            </configuration>
+                            <executions>
+                                <execution>
+                                    <id>attach-javadocs</id>
+                                    <goals>
+                                        <goal>jar</goal>
+                                    </goals>
+                                </execution>
+                            </executions>
+                        </plugin>
+
+                        <plugin>
+                            <groupId>org.apache.maven.plugins</groupId>
+                            <artifactId>maven-source-plugin</artifactId>
+                            <version>3.3.0</version>
+                            <executions>
+                                <execution>
+                                    <id>attach-javadocs</id>
+                                    <goals>
+                                        <goal>jar</goal>
+                                    </goals>
+                                </execution>
+                            </executions>
+                        </plugin>
                     </plugins>
 
                 </pluginManagement>
