@@ -35,8 +35,8 @@
 
 ## 使用说明
 
-| jar包版本                                                                                                                                                 | 集群系统说明                                           | 备注                   |
-|--------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------|----------------------|
+| jar包版本                                                                                                                                                 | Flink集群系统版本(推荐)                                | 备注                   |
+|--------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------|----------------------|
 | [flink-connector-jdbc-gaussdb-3.3.0-1.20](https://repo.maven.apache.org/maven2/com/huaweicloud/gaussdb/flink/flink-connector-jdbc-gaussdb/3.3.0-1.20/) | 基于 鲲鹏服务器 + Huawei Cloud EulerOS 2.0 标准版 64位 安装部署 | Flink1.20及以下集群环境适用     |
 | [flink-connector-jdbc-core-3.3.0-1.20](https://repo.maven.apache.org/maven2/com/huaweicloud/gaussdb/flink/flink-connector-jdbc-gaussdb/3.3.0-1.20/)    | 基于 鲲鹏服务器 + Huawei Cloud EulerOS 2.0 标准版 64位 安装部署 | Flink1.20及以下集群环境适用     |
 | [flink-connector-jdbc-gaussdb-4.0.0-2.0](https://repo1.maven.org/maven2/org/apache/flink/flink-connector-jdbc-core/4.0.0-2.0/)                         | 基于 鲲鹏服务器 + Huawei Cloud EulerOS 2.0 标准版 64位 安装部署 | Flink2.0集群环境适用       |	
