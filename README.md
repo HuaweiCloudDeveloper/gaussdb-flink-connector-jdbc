@@ -22,11 +22,11 @@
 ## 前置条件
 本项目提供的连接器使用前需预先安装 Flink集群及其相关运行环境，并下载对应jar包放置Flink集群各节点的Flink 安装目录 ~/lib 下！！！。
 需要下载的jar包 <strong>GaussDB驱动</strong> + <strong>flink-connector-jdbc-gaussdb</strong> + <strong>flink-connector-jdbc-core</strong>
-
 相关依赖jar包下载地址(以3.3.0-1.20版本举例):
+[**GaussDB驱动**](https://repo1.maven.org/maven2/com/huaweicloud/gaussdb/gaussdbjdbc/506.0.0.b058-jdk7/gaussdbjdbc-506.0.0.b058-jdk7.jar)
 [**flink-connector-jdbc-gaussdb**](https://repo.maven.apache.org/maven2/com/huaweicloud/gaussdb/flink/flink-connector-jdbc-gaussdb/3.3.0-1.20/)
 [**flink-connector-jdbc-core**](https://repo1.maven.org/maven2/org/apache/flink/flink-connector-jdbc-core/3.3.0-1.20/)
-[**GaussDB驱动**](https://repo1.maven.org/maven2/com/huaweicloud/gaussdb/gaussdbjdbc/506.0.0.b058-jdk7/gaussdbjdbc-506.0.0.b058-jdk7.jar)
+
 
 > **系统要求如下：**
 > - CPU: 2GHz 或更高
@@ -46,8 +46,9 @@
 
 **注意事项:**
 1. GaussDB驱动的选择: 依照Flink集群环境的JDK版本选择对应的驱动版本，否则可能出现低版本的JDK无法识别高版本的情况,导致任务提交失败。
-2. 连接器的选择: flink-connector-jdbc-gaussdb需要与flink-connector-jdbc-core的版本对应匹配 不支持混合版本使用。
-3. 建议直接下载后放置Flink安装目录 ~/lib 下使用,如要使用源码在本地重新打包后使用，注意对应连接器和JDK版本。
+2. 建议直接下载jar包后放置Flink安装目录 ~/lib 下使用,如要使用源码在本地重新打包后使用，注意对应连接器和JDK版本。
+3. 连接器的选择: flink-connector-jdbc-gaussdb和flink-connector-jdbc-core需要与Flink的版本对应匹配 不支持混合版本使用。
+4. 源码仓库地址: [**flink-connector-jdbc-gaussdb**](https://github.com/HuaweiCloudDeveloper/gaussdb-flink-connector-jdbc) , [**flink-connector-jdbc-core**](https://github.com/apache/flink-connector-jdbc)
 
 ## 获取帮助
 - 更多问题可通过 [issue](https://github.com/HuaweiCloudDeveloper/gaussdb-flink-connector-jdbc/issues) 与我们取得联系
