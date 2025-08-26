@@ -30,11 +30,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-/**
- * JDBC dialect for Gaussdb.
- *
- * <p>Notes: The source code is based on PostgresDialect.
- */
+/** JDBC dialect for Gaussdb. */
 @Internal
 public class GaussdbDialect extends AbstractDialect {
 
@@ -43,8 +39,7 @@ public class GaussdbDialect extends AbstractDialect {
     // Define MAX/MIN precision of TIMESTAMP type according to Gaussdb docs:
 
     private static final int MAX_TIMESTAMP_PRECISION = 6;
-    // TODO: see https://bbs.huaweicloud.com/forum/thread-0234179025026914116-1-1.html
-    private static final int MIN_TIMESTAMP_PRECISION = 0;
+    private static final int MIN_TIMESTAMP_PRECISION = 1;
 
     // Define MAX/MIN precision of DECIMAL type according to Gaussdb docs:
 

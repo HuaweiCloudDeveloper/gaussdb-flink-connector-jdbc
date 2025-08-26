@@ -27,19 +27,38 @@ under the License.
 
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.huaweicloud.gaussdb.flink</groupId>
-    <artifactId>flink-connector-jdbc-gaussdb-parent</artifactId>
-    <version>4.0-SNAPSHOT</version>
+    <groupId>org.apache.flink</groupId>
+    <artifactId>flink-connector-jdbc-parent</artifactId>
+    <version>3.3-SNAPSHOT</version>
     <name>Flink : Connectors : JDBC : Parent</name>
     <packaging>pom</packaging>
     <inceptionYear>2022</inceptionYear>
 
+    <scm>
+        <url>https://github.com/apache/flink-connector-jdbc</url>
+        <connection>git@github.com:apache/flink-connector-jdbc.git</connection>
+        <developerConnection>
+            scm:git:https://gitbox.apache.org/repos/asf/flink-connector-jdbc.git
+        </developerConnection>
+    </scm>
+
     <modules>
+        <module>flink-connector-jdbc</module>
+        <module>flink-connector-jdbc-architecture</module>
+        <module>flink-connector-jdbc-core</module>
+        <module>flink-connector-jdbc-cratedb</module>
+        <module>flink-connector-jdbc-db2</module>
         <module>flink-connector-jdbc-gaussdb</module>
+        <module>flink-connector-jdbc-mysql</module>
+        <module>flink-connector-jdbc-oceanbase</module>
+        <module>flink-connector-jdbc-oracle</module>
+        <module>flink-connector-jdbc-postgres</module>
+        <module>flink-connector-jdbc-sqlserver</module>
+        <module>flink-connector-jdbc-trino</module>
     </modules>
 
     <properties>
-        <flink.version>2.0.0</flink.version>
+        <flink.version>1.20.0</flink.version>
         <scala.binary.version>2.12</scala.binary.version>
         <scala-library.version>2.12.7</scala-library.version>
         <jackson-bom.version>2.13.4.20221013</jackson-bom.version>
@@ -54,7 +73,11 @@ under the License.
         <slf4j.version>1.7.36</slf4j.version>
         <log4j.version>2.17.2</log4j.version>
 
-        <flink.parent.artifactId>flink-connector-jdbc-gaussdb-parent</flink.parent.artifactId>
+        <flink.parent.artifactId>flink-connector-jdbc-parent</flink.parent.artifactId>
+        <surefire.module.config>
+            <!-- required by JdbcExactlyOnceSinkE2eTest --> --add-opens=java.base/java.util=ALL-UNNAMED
+            <!-- SimpleJdbcConnectionProviderDriverClassConcurrentLoadingITCase--> --add-opens=java.base/java.lang=ALL-UNNAMED
+        </surefire.module.config>
         <spotless.skip>false</spotless.skip>
     </properties>
 
@@ -412,213 +435,22 @@ under the License.
                         <skip>${spotless.skip}</skip>
                     </configuration>
                 </plugin>
-                <plugin>
-                    <!-- Sets a 'rootDir' system property that points to the root of the project.
-                         Child projects who want to use it must set the ${flink.parent.artifactId} property -->
-                    <groupId>org.commonjava.maven.plugins</groupId>
-                    <artifactId>directory-maven-plugin</artifactId>
-                    <version>0.1</version>
-                    <executions>
-                        <execution>
-                            <id>directories</id>
-                            <goals>
-                                <goal>directory-of</goal>
-                            </goals>
-                            <phase>initialize</phase>
-                            <configuration>
-                                <property>rootDir</property>
-                                <project>
-                                    <groupId>com.huaweicloud.gaussdb.flink</groupId>
-                                    <artifactId>${flink.parent.artifactId}</artifactId>
-                                </project>
-                            </configuration>
-                        </execution>
-                    </executions>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-surefire-plugin</artifactId>
-                    <version>3.0.0-M5</version>
-                    <configuration>
-                        <!-- enables TCP/IP communication between surefire and forked JVM-->
-                        <forkNode implementation="org.apache.maven.plugin.surefire.extensions.SurefireForkNodeFactory"/>
-                        <trimStackTrace>false</trimStackTrace>
-                        <systemPropertyVariables>
-                            <forkCount>1</forkCount>
-                            <threadCount>1</threadCount>
-                            <parallel>none</parallel>
-                            <useUnlimitedThreads>false</useUnlimitedThreads>
-                            <forkNumber>0${surefire.forkNumber}</forkNumber>
-                            <!-- $$ ensures that surefire resolves this to the current forkNumber,
-                                 instead of maven during initialization -->
-                            <mvn.forkNumber>$${surefire.forkNumber}</mvn.forkNumber>
-                            <user.country>US</user.country>
-                            <user.language>en</user.language>
-                            <project.basedir>${project.basedir}</project.basedir>
-                            <junit.jupiter.extensions.autodetection.enabled>true</junit.jupiter.extensions.autodetection.enabled>
-                        </systemPropertyVariables>
-                        <argLine>-Xms256m -Xmx2048m -XX:+UseG1GC</argLine>
-                    </configuration>
-                    <executions>
-                        <execution>
-                            <!--execute all the unit tests-->
-                            <id>default-test</id>
-                            <phase>test</phase>
-                            <goals>
-                                <goal>test</goal>
-                            </goals>
-                            <configuration>
-                                <includes>
-                                    <include>${test.unit.pattern}</include>
-                                </includes>
-                                <excludes>
-                                    <exclude>${additionalExcludes}</exclude>
-                                </excludes>
-                                <forkCount>1</forkCount>
-                                <argLine>${flink.surefire.baseArgLine} -Xmx${flink.XmxUnitTest}</argLine>
-                            </configuration>
-                        </execution>
-                        <execution>
-                            <!--execute all the integration tests-->
-                            <id>integration-tests</id>
-                            <phase>integration-test</phase>
-                            <goals>
-                                <goal>test</goal>
-                            </goals>
-                            <configuration>
-                                <includes>
-                                    <include>**/*.*</include>
-                                </includes>
-                                <excludes>
-                                    <exclude>${test.unit.pattern}</exclude>
-                                    <exclude>${additionalExcludes}</exclude>
-                                </excludes>
-                                <forkCount>1</forkCount>
-                                <argLine>${flink.surefire.baseArgLine} -Xmx${flink.XmxITCase}</argLine>
-                                <reuseForks>false</reuseForks>
-                            </configuration>
-                        </execution>
-                    </executions>
-                </plugin>
             </plugins>
         </pluginManagement>
     </build>
 
     <profiles>
         <profile>
-            <id>snapshot</id>
-            <distributionManagement>
-                <snapshotRepository>
-                    <id>sonatype</id>
-                    <url>https://oss.sonatype.org/content/repositories/snapshots</url>
-                </snapshotRepository>
-            </distributionManagement>
-        </profile>
-
-        <profile>
-            <id>central</id>
-            <build>
-                <pluginManagement>
-                    <plugins>
-
-                        <!-- Sign JARs -->
-
-                        <plugin>
-                            <groupId>org.apache.maven.plugins</groupId>
-                            <artifactId>maven-gpg-plugin</artifactId>
-                            <version>3.1.0</version>
-                            <executions>
-                                <execution>
-                                    <id>sign-artifacts</id>
-                                    <phase>verify</phase>
-                                    <goals>
-                                        <goal>sign</goal>
-                                    </goals>
-                                    <configuration>
-                                        <gpgArguments>
-                                            <arg>--pinentry-mode</arg>
-                                            <arg>loopback</arg>
-                                        </gpgArguments>
-                                    </configuration>
-                                </execution>
-                            </executions>
-                        </plugin>
-
-                        <!-- Deploy to Sonatype OSS Nexus -->
-
-                        <plugin>
-                            <groupId>org.sonatype.plugins</groupId>
-                            <artifactId>nexus-staging-maven-plugin</artifactId>
-                            <version>1.6.13</version>
-                            <extensions>true</extensions>
-                            <configuration>
-                                <serverId>sonatype</serverId>
-                                <nexusUrl>https://oss.sonatype.org/</nexusUrl>
-                                <autoReleaseAfterClose>true</autoReleaseAfterClose>
-                                <keepStagingRepositoryOnFailure>true</keepStagingRepositoryOnFailure>
-                            </configuration>
-                        </plugin>
-                    </plugins>
-
-                </pluginManagement>
-
-                <plugins>
-
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-gpg-plugin</artifactId>
-                    </plugin>
-
-                    <plugin>
-                        <groupId>org.sonatype.plugins</groupId>
-                        <artifactId>nexus-staging-maven-plugin</artifactId>
-                    </plugin>
-
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-javadoc-plugin</artifactId>
-                        <version>3.6.3</version>
-                        <configuration>
-                            <failOnError>false</failOnError>
-                            <sourceFileIncludes>
-                                <fileInclude>**/*Gaussdb*</fileInclude>
-                            </sourceFileIncludes>
-                            <overview>${basedir}/nonexistent-overview.html</overview>
-                        </configuration>
-                        <executions>
-                            <execution>
-                                <id>attach-javadocs</id>
-                                <goals>
-                                    <goal>jar</goal>
-                                </goals>
-                            </execution>
-                        </executions>
-                    </plugin>
-
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-source-plugin</artifactId>
-                        <version>3.3.0</version>
-                        <executions>
-                            <execution>
-                                <id>attach-sources</id>
-                                <goals>
-                                    <goal>jar</goal>
-                                </goals>
-                            </execution>
-                        </executions>
-                    </plugin>
-                </plugins>
-
-            </build>
-
-            <distributionManagement>
-                <repository>
-                    <id>sonatype</id>
-                    <url>https://oss.sonatype.org/service/local/staging/deploy/maven2/</url>
-                </repository>
-            </distributionManagement>
-
+            <id>java21</id>
+            <activation>
+                <jdk>[21,)</jdk>
+            </activation>
+            <properties>
+                <!-- Current google format does not run on Java 21.
+                     Don't upgrade it in this profile because it formats code differently.
+                     Re-evaluate once support for Java 8 is dropped. -->
+                <spotless.skip>true</spotless.skip>
+            </properties>
         </profile>
     </profiles>
 </project>

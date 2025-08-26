@@ -1,59 +1,68 @@
-<p align="center">
-  <h1 align="center">Flink connector jdbc implementation for GaussDB</h1>
+# Apache Flink JDBC Connector
 
+This repository contains the official Apache Flink JDBC connector.
 
-## 目录
+## Apache Flink
 
-- [项目介绍](#项目介绍)
-- [前置条件](#前置条件)
-- [使用说明](#使用说明)
-- [获取帮助](#获取帮助)
-- [如何贡献](#如何贡献)
+Apache Flink is an open source stream processing framework with powerful stream- and batch-processing capabilities.
 
-## 项目介绍
-‌[Flink-connector-jdbc-gaussdb‌](https://github.com/HuaweiCloudDeveloper/gaussdb-flink-connector-jdbc)  是一个开源的GaussDB连接器，专为Flink写入数据(sink)到GaussDB场景下使用。
+Learn more about Flink at [https://flink.apache.org/](https://flink.apache.org/)
 
-**核心特性：**
-1. 新增数据：对应insert功能, 新增增量数据。
-2. 更新数据：对应update功能, 更新存量数据。
-3. ‌删除数据：对应delete功能, 删除存量数据。
-4. 合并数据：对应upsert功能, 根据主键判断目标数据库(GaussDB)是否已存在增量数据，不存在则新增(insert)，存在则更新(update)。
+## Building the Apache Flink JDBC Connector from Source
 
-## 前置条件
-本项目提供的连接器使用前需预先安装 Flink集群及其相关运行环境，并下载对应jar包放置Flink集群各节点的Flink 安装目录 ~/lib 下！！！。
-需要下载的jar包 <strong>GaussDB驱动</strong> + <strong>flink-connector-jdbc-gaussdb</strong> + <strong>flink-connector-jdbc-core</strong>
-相关依赖jar包下载地址(以3.3.0-1.20版本举例):
-[**GaussDB驱动**](https://repo1.maven.org/maven2/com/huaweicloud/gaussdb/gaussdbjdbc/506.0.0.b058-jdk7/gaussdbjdbc-506.0.0.b058-jdk7.jar)
-[**flink-connector-jdbc-gaussdb**](https://repo.maven.apache.org/maven2/com/huaweicloud/gaussdb/flink/flink-connector-jdbc-gaussdb/3.3.0-1.20/)
-[**flink-connector-jdbc-core**](https://repo1.maven.org/maven2/org/apache/flink/flink-connector-jdbc-core/3.3.0-1.20/)
+Prerequisites:
 
+* Unix-like environment (we use Linux, Mac OS X)
+* Git
+* Maven (we recommend version 3.8.6)
+* Java 11
 
-> **系统要求如下：**
-> - CPU: 2GHz 或更高
-> - RAM: 4GB 或更大
-> - Disk: 至少 40GB
+```
+git clone https://github.com/apache/flink-connector-jdbc.git
+cd flink-connector-jdbc
+mvn clean package -DskipTests
+```
 
-## 使用说明
+The resulting jars can be found in the `target` directory of the respective module.
 
-| jar包版本                                                                                                                                                 | Flink集群系统版本(推荐)                                | 备注                   |
-|--------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------|----------------------|
-| [flink-connector-jdbc-gaussdb-3.3.0-1.20](https://repo.maven.apache.org/maven2/com/huaweicloud/gaussdb/flink/flink-connector-jdbc-gaussdb/3.3.0-1.20/) | 基于 鲲鹏服务器 + Huawei Cloud EulerOS 2.0 标准版 64位 安装部署 | Flink1.20及以下集群环境适用     |
-| [flink-connector-jdbc-core-3.3.0-1.20](https://repo.maven.apache.org/maven2/com/huaweicloud/gaussdb/flink/flink-connector-jdbc-gaussdb/3.3.0-1.20/)    | 基于 鲲鹏服务器 + Huawei Cloud EulerOS 2.0 标准版 64位 安装部署 | Flink1.20及以下集群环境适用     |
-| [flink-connector-jdbc-gaussdb-4.0.0-2.0](https://repo1.maven.org/maven2/org/apache/flink/flink-connector-jdbc-core/4.0.0-2.0/)                         | 基于 鲲鹏服务器 + Huawei Cloud EulerOS 2.0 标准版 64位 安装部署 | Flink2.0集群环境适用       |	
-| [flink-connector-jdbc-core-4.0.0-2.0](https://repo1.maven.org/maven2/org/apache/flink/flink-connector-jdbc-core/4.0.0-2.0/)                            | 基于 鲲鹏服务器 + Huawei Cloud EulerOS 2.0 标准版 64位 安装部署 | Flink2.0集群环境适用         |	
-| [GaussDB驱动1](https://repo1.maven.org/maven2/com/huaweicloud/gaussdb/gaussdbjdbc/506.0.0.b058-jdk7/gaussdbjdbc-506.0.0.b058-jdk7.jar)                   | 基于 鲲鹏服务器 + Huawei Cloud EulerOS 2.0 标准版 64位 安装部署 |Flink集群环境JDK 17以下使用  如 JDK 8、11 |	
-| [GaussDB驱动2](https://repo1.maven.org/maven2/com/huaweicloud/gaussdb/gaussdbjdbc/506.0.0.b058/gaussdbjdbc-506.0.0.b058.jar)                             | 基于 鲲鹏服务器 + Huawei Cloud EulerOS 2.0 标准版 64位 安装部署 |Flink集群环境JDK 17及以上使用           |
+## Developing Flink
 
-**注意事项:**
-1. GaussDB驱动的选择: 依照Flink集群环境的JDK版本选择对应的驱动版本，否则可能出现低版本的JDK无法识别高版本的情况,导致任务提交失败。
-2. 建议直接下载jar包后放置Flink安装目录 ~/lib 下使用,如要使用源码在本地重新打包后使用，注意对应连接器和JDK版本。
-3. 连接器的选择: flink-connector-jdbc-gaussdb和flink-connector-jdbc-core需要与Flink的版本对应匹配 不支持混合版本使用。
-4. 源码仓库地址: [**flink-connector-jdbc-gaussdb**](https://github.com/HuaweiCloudDeveloper/gaussdb-flink-connector-jdbc) , [**flink-connector-jdbc-core**](https://github.com/apache/flink-connector-jdbc)
+The Flink committers use IntelliJ IDEA to develop the Flink codebase.
+We recommend IntelliJ IDEA for developing projects that involve Scala code.
 
-## 获取帮助
-- 更多问题可通过 [issue](https://github.com/HuaweiCloudDeveloper/gaussdb-flink-connector-jdbc/issues) 与我们取得联系
+Minimal requirements for an IDE are:
+* Support for Java and Scala (also mixed projects)
+* Support for Maven with Java and Scala
 
+### IntelliJ IDEA
 
-## 如何贡献
-- Fork 此存储库并提交合并请求
-- 基于您的开源源码信息同步更新 README.md
+The IntelliJ IDE supports Maven out of the box and offers a plugin for Scala development.
+
+* IntelliJ download: [https://www.jetbrains.com/idea/](https://www.jetbrains.com/idea/)
+* IntelliJ Scala Plugin: [https://plugins.jetbrains.com/plugin/?id=1347](https://plugins.jetbrains.com/plugin/?id=1347)
+
+Check out our [Setting up IntelliJ](https://nightlies.apache.org/flink/flink-docs-master/flinkDev/ide_setup.html#intellij-idea) guide for details.
+
+## Support
+
+Don’t hesitate to ask!
+
+Contact the developers and community on the [mailing lists](https://flink.apache.org/community.html#mailing-lists) if you need any help.
+
+[Open an issue](https://issues.apache.org/jira/browse/FLINK) if you found a bug in Flink.
+
+## Documentation
+
+The documentation of Apache Flink is located on the website: [https://flink.apache.org](https://flink.apache.org)
+or in the `docs/` directory of the source code.
+
+## Fork and Contribute
+
+This is an active open-source project. We are always open to people who want to use the system or contribute to it.
+Contact us if you are looking for implementation tasks that fit your skills.
+This article describes [how to contribute to Apache Flink](https://flink.apache.org/contributing/how-to-contribute.html).
+
+## About
+
+Apache Flink is an open source project of The Apache Software Foundation (ASF).
+The Apache Flink project originated from the [Stratosphere](http://stratosphere.eu) research project.
