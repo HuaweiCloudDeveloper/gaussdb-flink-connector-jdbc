@@ -20,7 +20,11 @@ package org.apache.flink.connector.jdbc.gaussdb.database.dialect;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.connector.jdbc.core.database.dialect.AbstractDialectConverter;
+import org.apache.flink.connector.jdbc.gaussdb.table.GaussdbFieldObject;
+import org.apache.flink.connector.jdbc.statement.FieldNamedPreparedStatement;
 import org.apache.flink.table.data.GenericArrayData;
+import org.apache.flink.table.data.GenericRowData;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.ArrayType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
@@ -108,5 +112,21 @@ public class GaussdbDialectConverter extends AbstractDialectConverter {
     @Override
     public String converterName() {
         return "Gaussdb";
+    }
+
+    @Override
+    public FieldNamedPreparedStatement toExternal(
+            RowData rowData, FieldNamedPreparedStatement statement) throws SQLException {
+        GenericRowData genericRowData = (GenericRowData) rowData;
+        for (int index = 0; index < rowData.getArity(); index++) {
+            Object field = genericRowData.getField(index);
+            int sourceIndex = index;
+            if (field != null && field instanceof GaussdbFieldObject) {
+                sourceIndex = ((GaussdbFieldObject) field).getIndex();
+                genericRowData.setField(index, ((GaussdbFieldObject) field).getField());
+            }
+            toExternalConverters[sourceIndex].serialize(genericRowData, index, statement);
+        }
+        return statement;
     }
 }
