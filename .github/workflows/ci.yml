@@ -38,7 +38,8 @@ jobs:
       - name: Deploy to GitHub Packages
         run: mvn -B clean deploy -s settings.xml
         env:
-              GITHUB_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}  # 使用新创建的 PAT    
+          GITHUB_ACTOR: ${{ github.actor }}   
+          GITHUB_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}  # 使用新创建的 PAT    
       # - name: Build with Maven
       #   env:
       #     SONATYPE_USER: ${{ secrets.SONATYPE_USER }}
@@ -47,3 +48,5 @@ jobs:
       #     GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
       #run: mvn -B clean deploy -P central -s settings.xml
 #run: mvn -B deploy -P snapshot -s settings.xml
+#  run: mvn -B clean deploy -s settings.xml
+

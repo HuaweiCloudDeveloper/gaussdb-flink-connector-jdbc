@@ -2,11 +2,11 @@
 		  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
 		  xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd">
 
-	<servers>
-		<server>
-			<id>sonatype</id>
-			<username>${env.SONATYPE_USER}</username>
-			<password>${env.SONATYPE_PASSWORD}</password>
-		</server>
-	</servers>
+    <servers>
+        <server>
+            <id>github</id>
+            <username>${env.GITHUB_ACTOR}</username>  <!-- 使用环境变量，GitHub Actions 会自动填充 -->
+            <password>${env.GITHUB_TOKEN}</password>    <!-- 对应你设置的 GH_PACKAGES_TOKEN -->
+        </server>
+    </servers>
 </settings>
