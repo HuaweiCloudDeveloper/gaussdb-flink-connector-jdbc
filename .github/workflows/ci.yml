@@ -38,7 +38,7 @@ jobs:
       - name: Deploy to GitHub Packages
         run: mvn -B clean deploy -s settings.xml
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub 自动提供，无需配置    
+              GITHUB_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}  # 使用新创建的 PAT    
       # - name: Build with Maven
       #   env:
       #     SONATYPE_USER: ${{ secrets.SONATYPE_USER }}
