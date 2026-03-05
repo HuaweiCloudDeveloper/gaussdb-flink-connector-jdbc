@@ -1,10 +1,12 @@
 package org.apache.flink.connector.jdbc.gaussdb.table;
 
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.connector.jdbc.core.table.JdbcConnectorOptions;
 
-/*** Gaussdb connector options.*/
-
+/**
+ * Gaussdb connector options.
+ */
 public class GaussdbExtendConnectorOptions extends JdbcConnectorOptions {
 
     public static final ConfigOption<Boolean> SINK_IGNORE_NULL_WHEN_UPDATE =
