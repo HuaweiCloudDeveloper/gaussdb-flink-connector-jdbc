@@ -14,26 +14,42 @@ jobs:
     environment: gaussdb-flink-connector-jdbc-build
     steps:
       - uses: actions/checkout@v4
+      
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: 17
           distribution: adopt
           cache: maven
+          # 添加 server 配置，这样就不需要自定义 settings.xml
+          server-id: sonatype
+          server-username: SONATYPE_USERNAME
+          server-password: SONATYPE_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_KEY_BASE64 }}
+          gpg-passphrase: GPG_PASSPHRASE
+      
       - name: Set up Maven
         uses: stCarolas/setup-maven@v5
         with:
           maven-version: 3.9.9
+          
       - uses: actions/cache@v4
         with:
           path: ~/.m2/repository
           key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
             ${{ runner.os }}-maven-
-      - name: Build with Maven
+      
+      # 可选：验证 settings 是否正确
+      - name: Verify Maven Settings
+        run: |
+          echo "Checking Maven settings"
+          cat ~/.m2/settings.xml || echo "No settings.xml"
+      
+      # 部署到 Sonatype - 使用 central profile（你的 pom.xml 中定义的）
+      - name: Deploy to Sonatype
         env:
-          SONATYPE_USER: ${{ secrets.SONATYPE_USER }}
+          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USER }}
           SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
-          GPG_KEY_BASE64: ${{ secrets.GPG_KEY_BASE64 }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: mvn -B deploy -P snapshot -s settings.xml
+        run: mvn -B clean deploy -P central
