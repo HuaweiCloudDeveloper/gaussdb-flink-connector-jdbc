@@ -12,28 +12,34 @@ jobs:
     if: github.repository == 'HuaweiCloudDeveloper/gaussdb-flink-connector-jdbc'
     runs-on: ubuntu-latest
     environment: gaussdb-flink-connector-jdbc-build
+    
     steps:
       - uses: actions/checkout@v4
+      
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: 17
           distribution: adopt
           cache: maven
+          
       - name: Set up Maven
         uses: stCarolas/setup-maven@v5
         with:
           maven-version: 3.9.9
+          
       - uses: actions/cache@v4
         with:
           path: ~/.m2/repository
           key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
             ${{ runner.os }}-maven-
+            
       - name: Build with Maven
         env:
           SONATYPE_USER: ${{ secrets.SONATYPE_USER }}
           SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
           GPG_KEY_BASE64: ${{ secrets.GPG_KEY_BASE64 }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: mvn -B deploy -P snapshot -s settings.xml
+        run: 	mvn -B clean deploy -P central -s settings.xml
+#run: mvn -B deploy -P snapshot -s settings.xml
