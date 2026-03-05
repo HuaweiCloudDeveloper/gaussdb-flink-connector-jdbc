@@ -1,10 +1,11 @@
 package org.apache.flink.connector.jdbc.gaussdb.table;
 
-/**
- * GaussdbFieldObject.
- */
+/*** GaussdbFieldObject. */
+
 public class GaussdbFieldObject {
+    
     private final Object field;
+    
     private final int index;
 
     public GaussdbFieldObject(int index, Object field) {

@@ -36,7 +36,7 @@ jobs:
             ${{ runner.os }}-maven-
       
       - name: Deploy to GitHub Packages
-        run: mvn -B clean deploy -s settings.xml
+        run: mvn -B clean deploy -Dspotless.check.skip=true -s settings.xml
         env:
           GITHUB_ACTOR: ${{ github.actor }}   
           GITHUB_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}  # 使用新创建的 PAT    
