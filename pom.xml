@@ -29,7 +29,7 @@ under the License.
 
     <groupId>com.huaweicloud.gaussdb.flink</groupId>
     <artifactId>flink-connector-jdbc-gaussdb-parent</artifactId>
-    <version>4.0-SNAPSHOT</version>
+    <version>4.1-SNAPSHOT</version>
     <name>Flink : Connectors : JDBC : Parent</name>
     <packaging>pom</packaging>
     <inceptionYear>2022</inceptionYear>
@@ -506,12 +506,22 @@ under the License.
 
     <profiles>
         <profile>
-            <id>snapshot</id>
+            <!-- <id>snapshot</id>
             <distributionManagement>
                 <snapshotRepository>
                     <id>sonatype</id>
                     <url>https://oss.sonatype.org/content/repositories/snapshots</url>
                 </snapshotRepository>
+            </distributionManagement> -->
+            <id>github-packages</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>  <!-- 设为默认激活 -->
+            </activation>
+            <distributionManagement>
+                <repository>
+                    <id>github</id>
+                    <url>https://maven.pkg.github.com/HuaweiCloudDeveloper/gaussdb-flink-connector-jdbc</url>
+                </repository>
             </distributionManagement>
         </profile>
 
