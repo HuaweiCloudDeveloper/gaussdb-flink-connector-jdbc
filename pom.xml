@@ -48,21 +48,16 @@ under the License.
         <assertj.version>3.24.2</assertj.version>
         <testcontainers.version>1.20.1</testcontainers.version>
         <mockito.version>3.12.4</mockito.version>
-
         <japicmp.referenceVersion>3.0.0-1.16</japicmp.referenceVersion>
-
         <slf4j.version>1.7.36</slf4j.version>
         <log4j.version>2.17.2</log4j.version>
-
         <flink.parent.artifactId>flink-connector-jdbc-gaussdb-parent</flink.parent.artifactId>
         <spotless.skip>false</spotless.skip>
-        <checkstyle.skip>true</checkstyle.skip>  <!-- 添加 Checkstyle 跳过 -->
+        <checkstyle.skip>true</checkstyle.skip>
     </properties>
 
     <dependencies>
-
         <!-- Root dependencies for all projects -->
-
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-base</artifactId>
@@ -95,19 +90,16 @@ under the License.
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
-
         <dependency>
             <groupId>org.junit.vintage</groupId>
             <artifactId>junit-vintage-engine</artifactId>
             <scope>test</scope>
         </dependency>
-
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
             <scope>test</scope>
         </dependency>
-
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-core</artifactId>
@@ -115,125 +107,98 @@ under the License.
             <type>jar</type>
             <scope>test</scope>
         </dependency>
-
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
-
-        <!-- Tests will have log4j as the default logging framework available -->
-
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-slf4j-impl</artifactId>
             <scope>test</scope>
         </dependency>
-
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-api</artifactId>
             <scope>test</scope>
         </dependency>
-
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-core</artifactId>
             <scope>test</scope>
         </dependency>
-
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-test-utils-junit</artifactId>
             <scope>test</scope>
         </dependency>
-
     </dependencies>
 
-    <!-- This section defines the module versions that are used if nothing else is specified. -->
-
     <dependencyManagement>
-
         <dependencies>
-            <!-- For dependency convergence -->
+            <!-- 保持原有 dependencyManagement 不变 -->
             <dependency>
                 <groupId>org.scala-lang</groupId>
                 <artifactId>scala-library</artifactId>
                 <version>${scala-library.version}</version>
             </dependency>
-
-            <!-- Flink dependencies -->
-
             <dependency>
                 <groupId>org.apache.flink</groupId>
                 <artifactId>flink-connector-base</artifactId>
                 <version>${flink.version}</version>
             </dependency>
-
             <dependency>
                 <groupId>org.apache.flink</groupId>
                 <artifactId>flink-test-utils</artifactId>
                 <version>${flink.version}</version>
                 <scope>test</scope>
             </dependency>
-
             <dependency>
                 <groupId>org.apache.flink</groupId>
                 <artifactId>flink-test-utils-junit</artifactId>
                 <version>${flink.version}</version>
                 <scope>test</scope>
             </dependency>
-
-            <!-- This manages the 'javax.annotation' annotations (JSR305) -->
             <dependency>
                 <groupId>com.google.code.findbugs</groupId>
                 <artifactId>jsr305</artifactId>
                 <version>1.3.9</version>
             </dependency>
-
             <dependency>
                 <groupId>commons-codec</groupId>
                 <artifactId>commons-codec</artifactId>
                 <version>1.16.1</version>
             </dependency>
-
             <dependency>
                 <groupId>org.apache.httpcomponents</groupId>
                 <artifactId>httpcore</artifactId>
                 <version>4.4.14</version>
             </dependency>
-
             <dependency>
                 <groupId>org.apache.httpcomponents</groupId>
                 <artifactId>httpclient</artifactId>
                 <version>4.5.13</version>
             </dependency>
-
             <dependency>
                 <groupId>org.slf4j</groupId>
                 <artifactId>slf4j-api</artifactId>
                 <version>${slf4j.version}</version>
             </dependency>
-
             <dependency>
                 <groupId>org.apache.logging.log4j</groupId>
                 <artifactId>log4j-slf4j-impl</artifactId>
                 <version>${log4j.version}</version>
             </dependency>
-
             <dependency>
                 <groupId>org.apache.logging.log4j</groupId>
                 <artifactId>log4j-api</artifactId>
                 <version>${log4j.version}</version>
             </dependency>
-
             <dependency>
                 <groupId>org.apache.logging.log4j</groupId>
                 <artifactId>log4j-core</artifactId>
                 <version>${log4j.version}</version>
             </dependency>
-
-            <!-- For dependency convergence -->
             <dependency>
                 <groupId>com.fasterxml.jackson</groupId>
                 <artifactId>jackson-bom</artifactId>
@@ -241,8 +206,6 @@ under the License.
                 <scope>import</scope>
                 <version>${jackson-bom.version}</version>
             </dependency>
-
-            <!-- For dependency convergence -->
             <dependency>
                 <groupId>org.junit</groupId>
                 <artifactId>junit-bom</artifactId>
@@ -250,83 +213,62 @@ under the License.
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
-
             <dependency>
                 <groupId>junit</groupId>
                 <artifactId>junit</artifactId>
                 <version>${junit4.version}</version>
             </dependency>
-
             <dependency>
                 <groupId>org.assertj</groupId>
                 <artifactId>assertj-core</artifactId>
                 <version>${assertj.version}</version>
                 <scope>test</scope>
             </dependency>
-
-            <!-- For dependency convergence -->
             <dependency>
                 <groupId>com.esotericsoftware.kryo</groupId>
                 <artifactId>kryo</artifactId>
                 <version>2.24.0</version>
             </dependency>
-
-            <!-- For dependency convergence -->
             <dependency>
                 <groupId>org.objenesis</groupId>
                 <artifactId>objenesis</artifactId>
                 <version>2.1</version>
             </dependency>
-
-            <!-- For dependency convergence -->
             <dependency>
                 <groupId>org.apache.commons</groupId>
                 <artifactId>commons-compress</artifactId>
                 <version>1.26.1</version>
             </dependency>
-
-            <!-- For dependency convergence -->
             <dependency>
                 <groupId>org.apache.commons</groupId>
                 <artifactId>commons-lang3</artifactId>
                 <version>3.14.0</version>
             </dependency>
-
-            <!-- For dependency convergence -->
             <dependency>
                 <groupId>org.xerial.snappy</groupId>
                 <artifactId>snappy-java</artifactId>
                 <version>1.1.10.4</version>
             </dependency>
-
-            <!-- For dependency convergence on mockito/powermock mismatch -->
             <dependency>
                 <groupId>net.bytebuddy</groupId>
                 <artifactId>byte-buddy</artifactId>
                 <version>1.12.10</version>
             </dependency>
-
-            <!-- For dependency convergence on mockito/powermock mismatch -->
             <dependency>
                 <groupId>net.bytebuddy</groupId>
                 <artifactId>byte-buddy-agent</artifactId>
                 <version>1.12.10</version>
             </dependency>
-
-            <!-- For dependency convergence on crate-jdbc mismatch -->
             <dependency>
                 <groupId>com.google.guava</groupId>
                 <artifactId>guava</artifactId>
                 <version>33.0.0-jre</version>
             </dependency>
-
-            <!-- For dependency convergence on crate-jdbc mismatch -->
             <dependency>
                 <groupId>org.checkerframework</groupId>
                 <artifactId>checker-qual</artifactId>
                 <version>3.12.0</version>
             </dependency>
-
             <dependency>
                 <groupId>org.testcontainers</groupId>
                 <artifactId>testcontainers-bom</artifactId>
@@ -334,13 +276,12 @@ under the License.
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
-
         </dependencies>
     </dependencyManagement>
 
     <build>
+        <!-- 保持原有 build 配置不变 -->
         <plugins>
-
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
@@ -353,18 +294,14 @@ under the License.
                     </dependency>
                 </dependencies>
             </plugin>
-
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
             </plugin>
-
             <plugin>
-                <!-- activate API compatibility checks -->
                 <groupId>io.github.zentol.japicmp</groupId>
                 <artifactId>japicmp-maven-plugin</artifactId>
             </plugin>
-
             <plugin>
                 <groupId>org.apache.rat</groupId>
                 <artifactId>apache-rat-plugin</artifactId>
@@ -385,22 +322,18 @@ under the License.
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
             </plugin>
-
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
             </plugin>
-
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-enforcer-plugin</artifactId>
             </plugin>
-
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
             </plugin>
-
             <plugin>
                 <groupId>org.commonjava.maven.plugins</groupId>
                 <artifactId>directory-maven-plugin</artifactId>
@@ -417,8 +350,6 @@ under the License.
                     </configuration>
                 </plugin>
                 <plugin>
-                    <!-- Sets a 'rootDir' system property that points to the root of the project.
-                         Child projects who want to use it must set the ${flink.parent.artifactId} property -->
                     <groupId>org.commonjava.maven.plugins</groupId>
                     <artifactId>directory-maven-plugin</artifactId>
                     <version>0.1</version>
@@ -444,7 +375,6 @@ under the License.
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>3.0.0-M5</version>
                     <configuration>
-                        <!-- enables TCP/IP communication between surefire and forked JVM-->
                         <forkNode implementation="org.apache.maven.plugin.surefire.extensions.SurefireForkNodeFactory"/>
                         <trimStackTrace>false</trimStackTrace>
                         <systemPropertyVariables>
@@ -453,8 +383,6 @@ under the License.
                             <parallel>none</parallel>
                             <useUnlimitedThreads>false</useUnlimitedThreads>
                             <forkNumber>0${surefire.forkNumber}</forkNumber>
-                            <!-- $$ ensures that surefire resolves this to the current forkNumber,
-                                 instead of maven during initialization -->
                             <mvn.forkNumber>$${surefire.forkNumber}</mvn.forkNumber>
                             <user.country>US</user.country>
                             <user.language>en</user.language>
@@ -465,7 +393,6 @@ under the License.
                     </configuration>
                     <executions>
                         <execution>
-                            <!--execute all the unit tests-->
                             <id>default-test</id>
                             <phase>test</phase>
                             <goals>
@@ -483,7 +410,6 @@ under the License.
                             </configuration>
                         </execution>
                         <execution>
-                            <!--execute all the integration tests-->
                             <id>integration-tests</id>
                             <phase>integration-test</phase>
                             <goals>
@@ -526,102 +452,5 @@ under the License.
                 </snapshotRepository>
             </distributionManagement>
         </profile>
-
-        <!-- Central profile (commented out to avoid accidental activation) 
-        <profile>
-            <id>central</id>
-            <build>
-                <pluginManagement>
-                    <plugins>
-                        <plugin>
-                            <groupId>org.apache.maven.plugins</groupId>
-                            <artifactId>maven-gpg-plugin</artifactId>
-                            <version>3.1.0</version>
-                            <executions>
-                                <execution>
-                                    <id>sign-artifacts</id>
-                                    <phase>verify</phase>
-                                    <goals>
-                                        <goal>sign</goal>
-                                    </goals>
-                                    <configuration>
-                                        <gpgArguments>
-                                            <arg>--pinentry-mode</arg>
-                                            <arg>loopback</arg>
-                                        </gpgArguments>
-                                    </configuration>
-                                </execution>
-                            </executions>
-                        </plugin>
-                        <plugin>
-                            <groupId>org.sonatype.plugins</groupId>
-                            <artifactId>nexus-staging-maven-plugin</artifactId>
-                            <version>1.6.13</version>
-                            <extensions>true</extensions>
-                            <configuration>
-                                <serverId>sonatype</serverId>
-                                <nexusUrl>https://oss.sonatype.org/</nexusUrl>
-                                <autoReleaseAfterClose>true</autoReleaseAfterClose>
-                                <keepStagingRepositoryOnFailure>true</keepStagingRepositoryOnFailure>
-                            </configuration>
-                        </plugin>
-                    </plugins>
-                </pluginManagement>
-                <plugins>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-gpg-plugin</artifactId>
-                    </plugin>
-                    <plugin>
-                        <groupId>org.sonatype.plugins</groupId>
-                        <artifactId>nexus-staging-maven-plugin</artifactId>
-                    </plugin>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-javadoc-plugin</artifactId>
-                        <version>3.6.3</version>
-                        <configuration>
-                            <failOnError>false</failOnError>
-                            <sourceFileIncludes>
-                                <fileInclude>**/*Gaussdb*</fileInclude>
-                            </sourceFileIncludes>
-                            <overview>${basedir}/nonexistent-overview.html</overview>
-                        </configuration>
-                        <executions>
-                            <execution>
-                                <id>attach-javadocs</id>
-                                <goals>
-                                    <goal>jar</goal>
-                                </goals>
-                            </execution>
-                        </executions>
-                    </plugin>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-source-plugin</artifactId>
-                        <version>3.3.0</version>
-                        <executions>
-                            <execution>
-                                <id>attach-sources</id>
-                                <goals>
-                                    <goal>jar</goal>
-                                </goals>
-                            </execution>
-                        </executions>
-                    </plugin>
-                </plugins>
-            </build>
-            <distributionManagement>
-                <repository>
-                    <id>sonatype</id>
-                    <url>https://oss.sonatype.org/service/local/staging/deploy/maven2/</url>
-                </repository>
-                <snapshotRepository>
-                    <id>sonatype</id>
-                    <url>https://oss.sonatype.org/content/repositories/snapshots/</url>
-                </snapshotRepository>
-            </distributionManagement>
-        </profile>
-        -->
     </profiles>
 </project>
