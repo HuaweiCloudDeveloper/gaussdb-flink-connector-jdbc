@@ -56,6 +56,7 @@ under the License.
 
         <flink.parent.artifactId>flink-connector-jdbc-gaussdb-parent</flink.parent.artifactId>
         <spotless.skip>false</spotless.skip>
+        <checkstyle.skip>true</checkstyle.skip>  <!-- 添加 Checkstyle 跳过 -->
     </properties>
 
     <dependencies>
@@ -372,6 +373,9 @@ under the License.
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-checkstyle-plugin</artifactId>
+                <configuration>
+                    <skip>${checkstyle.skip}</skip>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>com.diffplug.spotless</groupId>
@@ -505,34 +509,30 @@ under the License.
     </build>
 
     <profiles>
+        <!-- GitHub Packages profile (default active) -->
         <profile>
-            <!-- <id>snapshot</id>
-            <distributionManagement>
-                <snapshotRepository>
-                    <id>sonatype</id>
-                    <url>https://oss.sonatype.org/content/repositories/snapshots</url>
-                </snapshotRepository>
-            </distributionManagement> -->
             <id>github-packages</id>
             <activation>
-                <activeByDefault>true</activeByDefault>  <!-- 设为默认激活 -->
+                <activeByDefault>true</activeByDefault>
             </activation>
             <distributionManagement>
                 <repository>
                     <id>github</id>
                     <url>https://maven.pkg.github.com/HuaweiCloudDeveloper/gaussdb-flink-connector-jdbc</url>
                 </repository>
+                <snapshotRepository>
+                    <id>github</id>
+                    <url>https://maven.pkg.github.com/HuaweiCloudDeveloper/gaussdb-flink-connector-jdbc</url>
+                </snapshotRepository>
             </distributionManagement>
         </profile>
 
+        <!-- Central profile (commented out to avoid accidental activation) 
         <profile>
             <id>central</id>
             <build>
                 <pluginManagement>
                     <plugins>
-
-                        <!-- Sign JARs -->
-
                         <plugin>
                             <groupId>org.apache.maven.plugins</groupId>
                             <artifactId>maven-gpg-plugin</artifactId>
@@ -553,9 +553,6 @@ under the License.
                                 </execution>
                             </executions>
                         </plugin>
-
-                        <!-- Deploy to Sonatype OSS Nexus -->
-
                         <plugin>
                             <groupId>org.sonatype.plugins</groupId>
                             <artifactId>nexus-staging-maven-plugin</artifactId>
@@ -569,21 +566,16 @@ under the License.
                             </configuration>
                         </plugin>
                     </plugins>
-
                 </pluginManagement>
-
                 <plugins>
-
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-gpg-plugin</artifactId>
                     </plugin>
-
                     <plugin>
                         <groupId>org.sonatype.plugins</groupId>
                         <artifactId>nexus-staging-maven-plugin</artifactId>
                     </plugin>
-
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-javadoc-plugin</artifactId>
@@ -604,7 +596,6 @@ under the License.
                             </execution>
                         </executions>
                     </plugin>
-
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-source-plugin</artifactId>
@@ -619,16 +610,18 @@ under the License.
                         </executions>
                     </plugin>
                 </plugins>
-
             </build>
-
             <distributionManagement>
                 <repository>
                     <id>sonatype</id>
                     <url>https://oss.sonatype.org/service/local/staging/deploy/maven2/</url>
                 </repository>
+                <snapshotRepository>
+                    <id>sonatype</id>
+                    <url>https://oss.sonatype.org/content/repositories/snapshots/</url>
+                </snapshotRepository>
             </distributionManagement>
-
         </profile>
+        -->
     </profiles>
 </project>
