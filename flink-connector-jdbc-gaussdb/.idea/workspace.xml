@@ -4,19 +4,13 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="81ad75a6-1354-4f64-accb-6c8b82fb68a9" name="更改" comment="增加IgnoreNullWhenUpdate">
-      <change afterPath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/GaussdbExtendConnectorOptions.java" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/GaussdbExtendOptions.java" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/GaussdbFieldObject.java" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/GaussdbJdbcDynamicTableFactory.java" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/executor/GaussdbUpsertStatementExecutor.java" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/sink/GaussdbJdbcDynamicTableSink.java" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/sink/GaussdbJdbcOutputFormatBuilder.java" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/main/resources/META-INF/services/org.apache.flink.table.factories.Factory" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/test/java/org/apache/flink/connector/jdbc/gaussdb/table/GaussdbJdbcDynamicTableSinkITCase.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/database/dialect/GaussdbDialectConverter.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/database/dialect/GaussdbDialectConverter.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/test/java/org/apache/flink/connector/jdbc/gaussdb/table/GaussdbDynamicTableSinkITCase.java" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/test/java/org/apache/flink/connector/jdbc/gaussdb/table/GaussdbDynamicTableSourceITCase.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/org/apache/flink/connector/jdbc/gaussdb/table/GaussdbDynamicTableSourceITCase.java" afterDir="false" />
+    <list default="true" id="81ad75a6-1354-4f64-accb-6c8b82fb68a9" name="更改" comment="">
+      <change beforePath="$PROJECT_DIR$/pom.xml" beforeDir="false" afterPath="$PROJECT_DIR$/pom.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/GaussdbExtendConnectorOptions.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/GaussdbExtendConnectorOptions.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/GaussdbFieldObject.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/GaussdbFieldObject.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/GaussdbJdbcDynamicTableFactory.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/GaussdbJdbcDynamicTableFactory.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/executor/GaussdbUpsertStatementExecutor.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/executor/GaussdbUpsertStatementExecutor.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/sink/GaussdbJdbcDynamicTableSink.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/org/apache/flink/connector/jdbc/gaussdb/table/sink/GaussdbJdbcDynamicTableSink.java" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -37,6 +31,9 @@
   </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$/.." />
+  </component>
+  <component name="MavenRunner">
+    <option name="skipTests" value="true" />
   </component>
   <component name="ProjectColorInfo">{
   &quot;associatedIndex&quot;: 8
@@ -59,13 +56,20 @@
     "JUnit.GaussdbDynamicTableSourceITCase.executor": "Run",
     "JUnit.GaussdbFactoryTest.executor": "Run",
     "JUnit.GaussdbFactoryTest.test.executor": "Run",
+    "JUnit.GaussdbJdbcDynamicTableSinkITCase.testIgnoreNullWhenUpdateEnabled.executor": "Run",
     "JavaVariableFindUsagesOptions.isSearchForAccessors": "true",
     "JavaVariableFindUsagesOptions.isSearchForTextOccurrences": "true",
+    "Maven.flink-connector-jdbc-gaussdb [clean].executor": "Run",
     "Maven.flink-connector-jdbc-gaussdb [com.diffplug.spotless:spotless-maven-plugin:2.27.1:apply].executor": "Run",
+    "Maven.flink-connector-jdbc-gaussdb [com.diffplug.spotless:spotless-maven-plugin:2.27.1:check].executor": "Run",
+    "Maven.flink-connector-jdbc-gaussdb [compile].executor": "Run",
     "Maven.flink-connector-jdbc-gaussdb [org.apache.maven.plugins:maven-checkstyle-plugin:3.1.2:check].executor": "Run",
     "Maven.flink-connector-jdbc-gaussdb [org.apache.maven.plugins:maven-checkstyle-plugin:3.1.2:checkstyle].executor": "Run",
+    "Maven.flink-connector-jdbc-gaussdb [org.apache.maven.plugins:maven-clean-plugin:3.1.0:clean].executor": "Run",
+    "Maven.flink-connector-jdbc-gaussdb [validate].executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "git-widget-placeholder": "master-dev",
+    "last_directory_selection": "D:/projects/gaussdb-flink-connector-jdbc/flink-connector-jdbc-gaussdb/src/test/java",
     "last_opened_file_path": "D:/projects/gaussdb-flink-connector-jdbc/flink-connector-jdbc-gaussdb/src/test/java/org/apache/flink/connector/jdbc/gaussdb/table",
     "node.js.detected.package.eslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
@@ -92,7 +96,7 @@
       <recent name="org.apache.flink.connector.jdbc.gaussdb.executor" />
     </key>
   </component>
-  <component name="RunManager" selected="应用程序.GaussdbTableITCase">
+  <component name="RunManager" selected="JUnit.GaussdbJdbcDynamicTableSinkITCase.testIgnoreNullWhenUpdateEnabled">
     <configuration name="GaussdbTableITCase" type="Application" factoryName="Application" temporary="true" nameIsGenerated="true">
       <option name="MAIN_CLASS_NAME" value="org.apache.flink.connector.jdbc.gaussdb.table.GaussdbTableITCase" />
       <module name="flink-connector-jdbc-gaussdb" />
@@ -118,16 +122,6 @@
         <option name="Make" enabled="true" />
       </method>
     </configuration>
-    <configuration name="GaussdbDynamicTableSinkITCase.testUpsert" type="JUnit" factoryName="JUnit" temporary="true" nameIsGenerated="true">
-      <module name="flink-connector-jdbc-gaussdb" />
-      <option name="PACKAGE_NAME" value="org.apache.flink.connector.jdbc.gaussdb.table" />
-      <option name="MAIN_CLASS_NAME" value="org.apache.flink.connector.jdbc.gaussdb.table.GaussdbDynamicTableSinkITCase" />
-      <option name="METHOD_NAME" value="testUpsert" />
-      <option name="TEST_OBJECT" value="method" />
-      <method v="2">
-        <option name="Make" enabled="true" />
-      </method>
-    </configuration>
     <configuration name="GaussdbDynamicTableSourceITCase" type="JUnit" factoryName="JUnit" temporary="true" nameIsGenerated="true">
       <module name="flink-connector-jdbc-gaussdb" />
       <option name="PACKAGE_NAME" value="org.apache.flink.connector.jdbc.gaussdb.table" />
@@ -137,13 +131,23 @@
         <option name="Make" enabled="true" />
       </method>
     </configuration>
+    <configuration name="GaussdbJdbcDynamicTableSinkITCase.testIgnoreNullWhenUpdateEnabled" type="JUnit" factoryName="JUnit" temporary="true" nameIsGenerated="true">
+      <module name="flink-connector-jdbc-gaussdb" />
+      <option name="PACKAGE_NAME" value="org.apache.flink.connector.jdbc.gaussdb.table" />
+      <option name="MAIN_CLASS_NAME" value="org.apache.flink.connector.jdbc.gaussdb.table.GaussdbJdbcDynamicTableSinkITCase" />
+      <option name="METHOD_NAME" value="testIgnoreNullWhenUpdateEnabled" />
+      <option name="TEST_OBJECT" value="method" />
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
     <recent_temporary>
       <list>
+        <item itemvalue="JUnit.GaussdbJdbcDynamicTableSinkITCase.testIgnoreNullWhenUpdateEnabled" />
         <item itemvalue="应用程序.GaussdbTableITCase" />
         <item itemvalue="JUnit.GaussdbDialectTest" />
         <item itemvalue="JUnit.GaussdbDialectTest" />
         <item itemvalue="JUnit.GaussdbDynamicTableSinkITCase" />
-        <item itemvalue="JUnit.GaussdbDynamicTableSourceITCase" />
       </list>
     </recent_temporary>
   </component>
@@ -171,8 +175,18 @@
       <workItem from="1770819683564" duration="986000" />
       <workItem from="1770821788920" duration="384000" />
       <workItem from="1771947928298" duration="57000" />
-      <workItem from="1772635113018" duration="2976000" />
+      <workItem from="1772635113018" duration="3188000" />
+      <workItem from="1772722230241" duration="1569000" />
     </task>
+    <task id="LOCAL-00001" summary="增加IgnoreNullWhenUpdate">
+      <option name="closed" value="true" />
+      <created>1772638154173</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1772638154173</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">

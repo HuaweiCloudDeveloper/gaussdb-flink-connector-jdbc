@@ -24,15 +24,14 @@ import org.apache.flink.connector.jdbc.gaussdb.table.GaussdbExtendOptions;
 import org.apache.flink.connector.jdbc.internal.GenericJdbcSinkFunction;
 import org.apache.flink.connector.jdbc.internal.options.InternalJdbcConnectionOptions;
 import org.apache.flink.connector.jdbc.internal.options.JdbcDmlOptions;
-import org.apache.flink.streaming.api.functions.sink.SinkFunction;  // 修改1：移除 legacy，添加正确导入
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.sink.legacy.SinkFunctionProvider;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.RowKind;
 
 import java.util.Objects;
 
-import static org.apache.flink.table.connector.sink.SinkFunctionProvider.of;  // 修改2：移除 legacy
 import static org.apache.flink.util.Preconditions.checkState;
 
 /** A {@link DynamicTableSink} for JDBC. */
@@ -87,7 +86,8 @@ public class GaussdbJdbcDynamicTableSink implements DynamicTableSink {
         builder.setGaussdbSinkOptions(gaussdbExtendOptions);
         builder.setFieldDataTypes(
                 DataType.getFieldDataTypes(physicalRowDataType).toArray(new DataType[0]));
-        return of(new GenericJdbcSinkFunction<>(builder.build()), jdbcOptions.getParallelism());
+        return SinkFunctionProvider.of(
+                new GenericJdbcSinkFunction<>(builder.build()), jdbcOptions.getParallelism());
     }
 
     @Override

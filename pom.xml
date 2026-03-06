@@ -29,7 +29,7 @@ under the License.
 
     <groupId>com.huaweicloud.gaussdb.flink</groupId>
     <artifactId>flink-connector-jdbc-gaussdb-parent</artifactId>
-    <version>4.1-SNAPSHOT</version>
+    <version>4.0-SNAPSHOT</version>
     <name>Flink : Connectors : JDBC : Parent</name>
     <packaging>pom</packaging>
     <inceptionYear>2022</inceptionYear>
@@ -59,7 +59,9 @@ under the License.
     </properties>
 
     <dependencies>
-        <!-- 原有依赖保持不变 -->
+
+        <!-- Root dependencies for all projects -->
+
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-base</artifactId>
@@ -119,6 +121,8 @@ under the License.
             <scope>test</scope>
         </dependency>
 
+        <!-- Tests will have log4j as the default logging framework available -->
+
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-slf4j-impl</artifactId>
@@ -142,41 +146,22 @@ under the License.
             <artifactId>flink-test-utils-junit</artifactId>
             <scope>test</scope>
         </dependency>
+
     </dependencies>
 
-    <!-- 新增：直接在这里定义distributionManagement，不再依赖profile -->
-    <!-- <distributionManagement>
-        <snapshotRepository>
-            <id>sonatype</id>
-            <url>https://oss.sonatype.org/content/repositories/snapshots/</url>
-        </snapshotRepository>
-        <repository>
-            <id>sonatype</id>
-            <url>https://oss.sonatype.org/service/local/staging/deploy/maven2/</url>
-        </repository>
-    </distributionManagement> -->
-
-    <distributionManagement>
-        <repository>
-            <id>github</id>
-            <name>GitHub Packages</name>
-            <url>https://maven.pkg.github.com/HuaweiCloudDeveloper/gaussdb-flink-connector-jdbc</url>
-        </repository>
-        <snapshotRepository>
-            <id>github</id>
-            <name>GitHub Packages</name>
-            <url>https://maven.pkg.github.com/HuaweiCloudDeveloper/gaussdb-flink-connector-jdbc</url>
-        </snapshotRepository>
-    </distributionManagement>
+    <!-- This section defines the module versions that are used if nothing else is specified. -->
 
     <dependencyManagement>
-        <!-- 原有dependencyManagement保持不变 -->
+
         <dependencies>
+            <!-- For dependency convergence -->
             <dependency>
                 <groupId>org.scala-lang</groupId>
                 <artifactId>scala-library</artifactId>
                 <version>${scala-library.version}</version>
             </dependency>
+
+            <!-- Flink dependencies -->
 
             <dependency>
                 <groupId>org.apache.flink</groupId>
@@ -198,6 +183,7 @@ under the License.
                 <scope>test</scope>
             </dependency>
 
+            <!-- This manages the 'javax.annotation' annotations (JSR305) -->
             <dependency>
                 <groupId>com.google.code.findbugs</groupId>
                 <artifactId>jsr305</artifactId>
@@ -246,6 +232,7 @@ under the License.
                 <version>${log4j.version}</version>
             </dependency>
 
+            <!-- For dependency convergence -->
             <dependency>
                 <groupId>com.fasterxml.jackson</groupId>
                 <artifactId>jackson-bom</artifactId>
@@ -254,6 +241,7 @@ under the License.
                 <version>${jackson-bom.version}</version>
             </dependency>
 
+            <!-- For dependency convergence -->
             <dependency>
                 <groupId>org.junit</groupId>
                 <artifactId>junit-bom</artifactId>
@@ -275,54 +263,63 @@ under the License.
                 <scope>test</scope>
             </dependency>
 
+            <!-- For dependency convergence -->
             <dependency>
                 <groupId>com.esotericsoftware.kryo</groupId>
                 <artifactId>kryo</artifactId>
                 <version>2.24.0</version>
             </dependency>
 
+            <!-- For dependency convergence -->
             <dependency>
                 <groupId>org.objenesis</groupId>
                 <artifactId>objenesis</artifactId>
                 <version>2.1</version>
             </dependency>
 
+            <!-- For dependency convergence -->
             <dependency>
                 <groupId>org.apache.commons</groupId>
                 <artifactId>commons-compress</artifactId>
                 <version>1.26.1</version>
             </dependency>
 
+            <!-- For dependency convergence -->
             <dependency>
                 <groupId>org.apache.commons</groupId>
                 <artifactId>commons-lang3</artifactId>
                 <version>3.14.0</version>
             </dependency>
 
+            <!-- For dependency convergence -->
             <dependency>
                 <groupId>org.xerial.snappy</groupId>
                 <artifactId>snappy-java</artifactId>
                 <version>1.1.10.4</version>
             </dependency>
 
+            <!-- For dependency convergence on mockito/powermock mismatch -->
             <dependency>
                 <groupId>net.bytebuddy</groupId>
                 <artifactId>byte-buddy</artifactId>
                 <version>1.12.10</version>
             </dependency>
 
+            <!-- For dependency convergence on mockito/powermock mismatch -->
             <dependency>
                 <groupId>net.bytebuddy</groupId>
                 <artifactId>byte-buddy-agent</artifactId>
                 <version>1.12.10</version>
             </dependency>
 
+            <!-- For dependency convergence on crate-jdbc mismatch -->
             <dependency>
                 <groupId>com.google.guava</groupId>
                 <artifactId>guava</artifactId>
                 <version>33.0.0-jre</version>
             </dependency>
 
+            <!-- For dependency convergence on crate-jdbc mismatch -->
             <dependency>
                 <groupId>org.checkerframework</groupId>
                 <artifactId>checker-qual</artifactId>
@@ -336,11 +333,13 @@ under the License.
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+
         </dependencies>
     </dependencyManagement>
 
     <build>
         <plugins>
+
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
@@ -360,6 +359,7 @@ under the License.
             </plugin>
 
             <plugin>
+                <!-- activate API compatibility checks -->
                 <groupId>io.github.zentol.japicmp</groupId>
                 <artifactId>japicmp-maven-plugin</artifactId>
             </plugin>
@@ -413,6 +413,8 @@ under the License.
                     </configuration>
                 </plugin>
                 <plugin>
+                    <!-- Sets a 'rootDir' system property that points to the root of the project.
+                         Child projects who want to use it must set the ${flink.parent.artifactId} property -->
                     <groupId>org.commonjava.maven.plugins</groupId>
                     <artifactId>directory-maven-plugin</artifactId>
                     <version>0.1</version>
@@ -438,6 +440,7 @@ under the License.
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>3.0.0-M5</version>
                     <configuration>
+                        <!-- enables TCP/IP communication between surefire and forked JVM-->
                         <forkNode implementation="org.apache.maven.plugin.surefire.extensions.SurefireForkNodeFactory"/>
                         <trimStackTrace>false</trimStackTrace>
                         <systemPropertyVariables>
@@ -446,6 +449,8 @@ under the License.
                             <parallel>none</parallel>
                             <useUnlimitedThreads>false</useUnlimitedThreads>
                             <forkNumber>0${surefire.forkNumber}</forkNumber>
+                            <!-- $$ ensures that surefire resolves this to the current forkNumber,
+                                 instead of maven during initialization -->
                             <mvn.forkNumber>$${surefire.forkNumber}</mvn.forkNumber>
                             <user.country>US</user.country>
                             <user.language>en</user.language>
@@ -456,6 +461,7 @@ under the License.
                     </configuration>
                     <executions>
                         <execution>
+                            <!--execute all the unit tests-->
                             <id>default-test</id>
                             <phase>test</phase>
                             <goals>
@@ -473,6 +479,7 @@ under the License.
                             </configuration>
                         </execution>
                         <execution>
+                            <!--execute all the integration tests-->
                             <id>integration-tests</id>
                             <phase>integration-test</phase>
                             <goals>
@@ -497,13 +504,25 @@ under the License.
         </pluginManagement>
     </build>
 
-    <!-- 保留profiles但移除deploy配置，或者直接删除整个profiles部分 -->
     <profiles>
+        <profile>
+            <id>snapshot</id>
+            <distributionManagement>
+                <snapshotRepository>
+                    <id>sonatype</id>
+                    <url>https://oss.sonatype.org/content/repositories/snapshots</url>
+                </snapshotRepository>
+            </distributionManagement>
+        </profile>
+
         <profile>
             <id>central</id>
             <build>
                 <pluginManagement>
                     <plugins>
+
+                        <!-- Sign JARs -->
+
                         <plugin>
                             <groupId>org.apache.maven.plugins</groupId>
                             <artifactId>maven-gpg-plugin</artifactId>
@@ -525,6 +544,8 @@ under the License.
                             </executions>
                         </plugin>
 
+                        <!-- Deploy to Sonatype OSS Nexus -->
+
                         <plugin>
                             <groupId>org.sonatype.plugins</groupId>
                             <artifactId>nexus-staging-maven-plugin</artifactId>
@@ -538,9 +559,11 @@ under the License.
                             </configuration>
                         </plugin>
                     </plugins>
+
                 </pluginManagement>
 
                 <plugins>
+
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-gpg-plugin</artifactId>
@@ -586,7 +609,16 @@ under the License.
                         </executions>
                     </plugin>
                 </plugins>
+
             </build>
+
+            <distributionManagement>
+                <repository>
+                    <id>sonatype</id>
+                    <url>https://oss.sonatype.org/service/local/staging/deploy/maven2/</url>
+                </repository>
+            </distributionManagement>
+
         </profile>
     </profiles>
 </project>
