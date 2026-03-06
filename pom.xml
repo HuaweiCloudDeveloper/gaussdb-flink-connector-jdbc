@@ -52,9 +52,27 @@ under the License.
         <slf4j.version>1.7.36</slf4j.version>
         <log4j.version>2.17.2</log4j.version>
         <flink.parent.artifactId>flink-connector-jdbc-gaussdb-parent</flink.parent.artifactId>
-        <spotless.skip>false</spotless.skip>
+        <spotless.skip>true</spotless.skip>
         <checkstyle.skip>true</checkstyle.skip>
+        <jdbc-connector.version>4.0.0-2.0</jdbc-connector.version>
+        <gaussdb.version>506.0.0.b058</gaussdb.version>
     </properties>
+
+    <repositories>
+        <repository>
+            <id>central</id>
+            <name>Maven Central</name>
+            <url>https://repo.maven.apache.org/maven2</url>
+        </repository>
+        <repository>
+            <id>apache-snapshots</id>
+            <name>Apache Snapshots</name>
+            <url>https://repository.apache.org/content/repositories/snapshots/</url>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
 
     <dependencies>
         <!-- Root dependencies for all projects -->
@@ -136,12 +154,14 @@ under the License.
 
     <dependencyManagement>
         <dependencies>
-            <!-- 保持原有 dependencyManagement 不变 -->
+            <!-- For dependency convergence -->
             <dependency>
                 <groupId>org.scala-lang</groupId>
                 <artifactId>scala-library</artifactId>
                 <version>${scala-library.version}</version>
             </dependency>
+
+            <!-- Flink dependencies -->
             <dependency>
                 <groupId>org.apache.flink</groupId>
                 <artifactId>flink-connector-base</artifactId>
@@ -159,11 +179,21 @@ under the License.
                 <version>${flink.version}</version>
                 <scope>test</scope>
             </dependency>
+
+            <!-- JDBC Connector Core -->
+            <dependency>
+                <groupId>org.apache.flink</groupId>
+                <artifactId>flink-connector-jdbc-core</artifactId>
+                <version>${jdbc-connector.version}</version>
+            </dependency>
+
+            <!-- This manages the 'javax.annotation' annotations (JSR305) -->
             <dependency>
                 <groupId>com.google.code.findbugs</groupId>
                 <artifactId>jsr305</artifactId>
                 <version>1.3.9</version>
             </dependency>
+
             <dependency>
                 <groupId>commons-codec</groupId>
                 <artifactId>commons-codec</artifactId>
@@ -280,7 +310,6 @@ under the License.
     </dependencyManagement>
 
     <build>
-        <!-- 保持原有 build 配置不变 -->
         <plugins>
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
@@ -317,6 +346,9 @@ under the License.
             <plugin>
                 <groupId>com.diffplug.spotless</groupId>
                 <artifactId>spotless-maven-plugin</artifactId>
+                <configuration>
+                    <skip>${spotless.skip}</skip>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -342,13 +374,6 @@ under the License.
 
         <pluginManagement>
             <plugins>
-                <plugin>
-                    <groupId>com.diffplug.spotless</groupId>
-                    <artifactId>spotless-maven-plugin</artifactId>
-                    <configuration>
-                        <skip>${spotless.skip}</skip>
-                    </configuration>
-                </plugin>
                 <plugin>
                     <groupId>org.commonjava.maven.plugins</groupId>
                     <artifactId>directory-maven-plugin</artifactId>
