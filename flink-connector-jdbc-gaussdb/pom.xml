@@ -16,6 +16,7 @@
 
     <properties>
         <gaussdb.version>506.0.0.b058</gaussdb.version>
+        <flink-connector-jdbc-core.version>4.0.0-2.0</flink-connector-jdbc-core.version>
     </properties>
 
     <dependencies>
@@ -23,21 +24,13 @@
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-jdbc-core</artifactId>
-            <version>${project.version}</version>
+            <version>${flink-connector-jdbc-core.version}</version>
         </dependency>
 
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-jdbc-core</artifactId>
-            <version>${project.version}</version>
-            <type>test-jar</type>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.apache.flink</groupId>
-            <artifactId>flink-connector-jdbc-core</artifactId>
-            <version>${project.version}</version>
+            <version>${flink-connector-jdbc-core.version}</version>
             <type>test-jar</type>
             <scope>test</scope>
         </dependency>
