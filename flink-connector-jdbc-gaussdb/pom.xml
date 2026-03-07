@@ -3,39 +3,34 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-    
     <parent>
         <groupId>com.huaweicloud.gaussdb.flink</groupId>
         <artifactId>flink-connector-jdbc-gaussdb-parent</artifactId>
-        <version>4.1-SNAPSHOT</version>
-        <relativePath>../pom.xml</relativePath>
+        <version>4.0-SNAPSHOT</version>
     </parent>
 
     <artifactId>flink-connector-jdbc-gaussdb</artifactId>
     <name>Flink : Connectors : JDBC : GaussDB</name>
+
     <packaging>jar</packaging>
 
+    <properties>
+        <gaussdb.version>506.0.0.b058</gaussdb.version>
+    </properties>
+
     <dependencies>
-        <!-- flink-connector-jdbc-core - 使用固定版本 -->
+
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-jdbc-core</artifactId>
-            <version>${jdbc-connector.version}</version>
+            <version>${project.version}</version>
         </dependency>
 
-        <!-- test-jar 也使用相同版本 -->
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-jdbc-core</artifactId>
-            <version>${jdbc-connector.version}</version>
+            <version>${project.version}</version>
             <type>test-jar</type>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.apache.flink</groupId>
-            <artifactId>flink-runtime</artifactId>
-            <version>${flink.version}</version>
             <scope>test</scope>
         </dependency>
 
@@ -61,7 +56,7 @@
             <version>${flink.version}</version>
             <scope>test</scope>
         </dependency>
-        
+
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-table-planner_${scala.binary.version}</artifactId>
@@ -85,23 +80,9 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- Assertions test dependencies -->
-        <dependency>
-            <groupId>org.assertj</groupId>
-            <artifactId>assertj-core</artifactId>
-            <version>${assertj.version}</version>
-            <scope>test</scope>
-        </dependency>
-        
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>jdbc</artifactId>
-            <scope>test</scope>
-        </dependency>
-        
-        <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-core</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
