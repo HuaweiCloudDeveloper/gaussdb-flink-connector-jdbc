@@ -20,6 +20,4 @@ mvn \
     -Pcentral \
     -Dmaven.test.skip=true \
     -Dgpg.passphrase=${GPG_PASSPHRASE} \
-    -DSONATYPE_USER=${SONATYPE_USER} \
-    -DSONATYPE_PASSWORD=${SONATYPE_PASSWORD} \
     clean deploy -B -D skipITs
