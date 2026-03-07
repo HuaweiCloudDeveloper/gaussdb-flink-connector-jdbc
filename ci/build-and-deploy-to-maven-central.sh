@@ -16,8 +16,8 @@ gpg -k
 echo "Staging to Maven Central"
 
 mvn \
-    -s settings.xml \
+    # -s settings.xml \
     -Pcentral \
     -Dmaven.test.skip=true \
-    -Dgpg.passphrase=${GPG_PASSPHRASE} \
+    # -Dgpg.passphrase=${GPG_PASSPHRASE} \
     clean deploy -B -D skipITs
