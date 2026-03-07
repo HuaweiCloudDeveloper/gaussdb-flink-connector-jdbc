@@ -505,7 +505,7 @@ under the License.
     </build>
 
     <profiles>
-        <profile>
+        <!-- <profile>
             <id>snapshot</id>
             <distributionManagement>
                 <snapshotRepository>
@@ -513,7 +513,7 @@ under the License.
                     <url>https://oss.sonatype.org/content/repositories/snapshots</url>
                 </snapshotRepository>
             </distributionManagement>
-        </profile>
+        </profile> -->
 
         <profile>
             <id>central</id>
