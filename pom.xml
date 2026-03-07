@@ -29,7 +29,7 @@ under the License.
 
     <groupId>com.huaweicloud.gaussdb.flink</groupId>
     <artifactId>flink-connector-jdbc-gaussdb-parent</artifactId>
-    <version>4.0-SNAPSHOT</version>
+    <version>3.3.0-1.20</version>
     <name>Flink : Connectors : JDBC : Parent</name>
     <packaging>pom</packaging>
     <inceptionYear>2022</inceptionYear>
@@ -395,6 +395,12 @@ under the License.
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-deploy-plugin</artifactId>
+                <version>3.1.1</version>
             </plugin>
 
             <plugin>
