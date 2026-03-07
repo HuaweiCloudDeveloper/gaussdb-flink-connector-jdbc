@@ -25,7 +25,11 @@ import org.testcontainers.containers.JdbcDatabaseContainer;
 
 import javax.sql.XADataSource;
 
-/** Postgres Metadata. */
+/**
+ * Gaussdb Metadata.
+ *
+ * <p>Notes: The source code is based on PostgresMetadata.
+ */
 public class GaussdbMetadata implements DatabaseMetadata {
 
     private final String username;
@@ -35,19 +39,8 @@ public class GaussdbMetadata implements DatabaseMetadata {
     private final String version;
     private final boolean xaEnabled;
 
-    public GaussdbMetadata(
-            String username,
-            String password,
-            String url,
-            String driver,
-            String version,
-            boolean hasXaEnabled) {
-        this.username = username;
-        this.password = password;
-        this.url = url;
-        this.driver = driver;
-        this.version = version;
-        this.xaEnabled = hasXaEnabled;
+    public GaussdbMetadata(GaussDBContainer<?> container) {
+        this(container, false);
     }
 
     public GaussdbMetadata(JdbcDatabaseContainer<?> container, boolean hasXaEnabled) {

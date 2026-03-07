@@ -26,12 +26,12 @@ import org.apache.flink.connector.jdbc.internal.options.InternalJdbcConnectionOp
 import org.apache.flink.connector.jdbc.internal.options.JdbcDmlOptions;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
-import org.apache.flink.table.connector.sink.legacy.SinkFunctionProvider;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.RowKind;
 
 import java.util.Objects;
 
+import static org.apache.flink.table.connector.sink.legacy.SinkFunctionProvider.of;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /** A {@link DynamicTableSink} for JDBC. */
@@ -86,8 +86,7 @@ public class GaussdbJdbcDynamicTableSink implements DynamicTableSink {
         builder.setGaussdbSinkOptions(gaussdbExtendOptions);
         builder.setFieldDataTypes(
                 DataType.getFieldDataTypes(physicalRowDataType).toArray(new DataType[0]));
-        return SinkFunctionProvider.of(
-                new GenericJdbcSinkFunction<>(builder.build()), jdbcOptions.getParallelism());
+        return of(new GenericJdbcSinkFunction<>(builder.build()), jdbcOptions.getParallelism());
     }
 
     @Override

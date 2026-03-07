@@ -4,9 +4,9 @@
 
 	<servers>
 		<server>
-			<id>github</id>  <!-- 这个 id 必须与 pom.xml 中的 distributionManagement id 一致 -->
-			<username>${env.GITHUB_ACTOR}</username>  <!-- 或者使用你的 GitHub 用户名 -->
-			<password>${env.GITHUB_TOKEN}</password>
+			<id>sonatype</id>
+			<username>${env.SONATYPE_USER}</username>
+			<password>${env.SONATYPE_PASSWORD}</password>
 		</server>
 	</servers>
 </settings>

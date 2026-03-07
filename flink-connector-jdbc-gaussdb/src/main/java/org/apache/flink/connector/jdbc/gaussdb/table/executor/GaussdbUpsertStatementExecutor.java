@@ -17,7 +17,9 @@ import java.sql.SQLException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** Gaussdb upsert statement executor. */
+/**
+ * Gaussdb upsert statement executor.
+ */
 public class GaussdbUpsertStatementExecutor implements JdbcBatchStatementExecutor<RowData> {
 
     private JdbcDialect dialect;
@@ -82,10 +84,5 @@ public class GaussdbUpsertStatementExecutor implements JdbcBatchStatementExecuto
         if (updateStatement != null) {
             updateStatement.close();
         }
-    }
-
-    @Override
-    public String insertSql() {
-        return dialect.getInsertIntoStatement(tableName, fieldNames);
     }
 }

@@ -135,8 +135,7 @@ public class GaussdbJdbcDynamicTableFactory
                 helper.getOptions().get(LookupOptions.MAX_RETRIES),
                 getLookupCache(config),
                 helper.getOptions().get(FILTER_HANDLING_POLICY),
-                context.getPhysicalRowDataType(),
-                tableIdentifier);
+                context.getPhysicalRowDataType());
     }
 
     private static void validateDataTypeWithJdbcDialect(
