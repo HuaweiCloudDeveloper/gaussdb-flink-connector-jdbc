@@ -9,9 +9,7 @@ import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.types.RowKind;
 
-/**
- * RowData 包装类.
- */
+/** RowData 包装类. */
 public class GaussdbWrapperRowData implements RowData {
 
     private RowData rowData;
