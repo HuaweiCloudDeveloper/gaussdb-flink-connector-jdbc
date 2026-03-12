@@ -29,7 +29,7 @@ under the License.
 
     <groupId>com.huaweicloud.gaussdb.flink</groupId>
     <artifactId>flink-connector-jdbc-gaussdb-parent</artifactId>
-    <version>3.3.0-1.20</version>
+    <version>3.3.0-1.20.0-h0.cbu.mrs.351.r22</version>
     <name>Flink : Connectors : JDBC : Parent</name>
     <packaging>pom</packaging>
     <inceptionYear>2022</inceptionYear>

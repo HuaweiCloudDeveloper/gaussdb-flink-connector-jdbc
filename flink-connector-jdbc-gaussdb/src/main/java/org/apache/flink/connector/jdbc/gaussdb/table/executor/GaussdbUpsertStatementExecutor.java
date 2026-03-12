@@ -3,11 +3,10 @@ package org.apache.flink.connector.jdbc.gaussdb.table.executor;
 import org.apache.flink.connector.jdbc.core.database.dialect.JdbcDialect;
 import org.apache.flink.connector.jdbc.core.database.dialect.JdbcDialectConverter;
 import org.apache.flink.connector.jdbc.gaussdb.table.GaussdbExtendOptions;
-import org.apache.flink.connector.jdbc.gaussdb.table.GaussdbFieldObject;
+import org.apache.flink.connector.jdbc.gaussdb.table.GaussdbWrapperRowData;
 import org.apache.flink.connector.jdbc.internal.executor.JdbcBatchStatementExecutor;
 import org.apache.flink.connector.jdbc.internal.options.JdbcDmlOptions;
 import org.apache.flink.connector.jdbc.statement.FieldNamedPreparedStatement;
-import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
@@ -46,27 +45,25 @@ public class GaussdbUpsertStatementExecutor implements JdbcBatchStatementExecuto
 
     @Override
     public void addToBatch(RowData rowData) throws SQLException {
-        GenericRowData genericRowData = (GenericRowData) rowData;
         String[] newFieldNames;
         if (options.isIgnoreNullWhenUpdate()) {
-            Map<String, GaussdbFieldObject> indexFieldData = new LinkedHashMap<>();
-            for (int i = 0; i < genericRowData.getArity(); i++) {
-                if (!genericRowData.isNullAt(i)) {
-                    indexFieldData.put(
-                            fieldNames[i], new GaussdbFieldObject(i, genericRowData.getField(i)));
+            Map<String, Integer> indexFieldData = new LinkedHashMap<>();
+            for (int i = 0; i < rowData.getArity(); i++) {
+                if (!rowData.isNullAt(i)) {
+                    indexFieldData.put(fieldNames[i], i);
                 }
             }
             newFieldNames = indexFieldData.keySet().toArray(new String[0]);
-            genericRowData =
-                    GenericRowData.ofKind(
-                            genericRowData.getRowKind(), indexFieldData.values().toArray());
+            rowData =
+                    new GaussdbWrapperRowData(
+                            rowData, indexFieldData.values().toArray(new Integer[0]));
         } else {
             newFieldNames = fieldNames;
         }
         String sql = dialect.getUpsertStatement(tableName, newFieldNames, keyFields).get();
         updateStatement =
                 FieldNamedPreparedStatement.prepareStatement(connection, sql, newFieldNames);
-        updateSetter.toExternal(genericRowData, updateStatement);
+        updateSetter.toExternal(rowData, updateStatement);
         updateStatement.addBatch();
     }
 

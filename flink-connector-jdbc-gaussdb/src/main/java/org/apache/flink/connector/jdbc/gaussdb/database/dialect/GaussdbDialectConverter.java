@@ -20,10 +20,9 @@ package org.apache.flink.connector.jdbc.gaussdb.database.dialect;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.connector.jdbc.core.database.dialect.AbstractDialectConverter;
-import org.apache.flink.connector.jdbc.gaussdb.table.GaussdbFieldObject;
+import org.apache.flink.connector.jdbc.gaussdb.table.GaussdbWrapperRowData;
 import org.apache.flink.connector.jdbc.statement.FieldNamedPreparedStatement;
 import org.apache.flink.table.data.GenericArrayData;
-import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.ArrayType;
 import org.apache.flink.table.types.logical.LogicalType;
@@ -82,7 +81,7 @@ public class GaussdbDialectConverter extends AbstractDialectConverter {
         LogicalTypeRoot root = type.getTypeRoot();
         if (root == LogicalTypeRoot.ARRAY) {
             // note: Writing ARRAY type is not yet supported by GaussdbQL dialect now.
-            return (val, index, statement) -> {
+            return (val, rowIndex, stateIndex, statement) -> {
                 throw new IllegalStateException(
                         String.format(
                                 "Writing ARRAY type is not yet supported in JDBC:%s.",
@@ -117,15 +116,19 @@ public class GaussdbDialectConverter extends AbstractDialectConverter {
     @Override
     public FieldNamedPreparedStatement toExternal(
             RowData rowData, FieldNamedPreparedStatement statement) throws SQLException {
-        GenericRowData genericRowData = (GenericRowData) rowData;
-        for (int index = 0; index < rowData.getArity(); index++) {
-            Object field = genericRowData.getField(index);
-            int sourceIndex = index;
-            if (field != null && field instanceof GaussdbFieldObject) {
-                sourceIndex = ((GaussdbFieldObject) field).getIndex();
-                genericRowData.setField(index, ((GaussdbFieldObject) field).getField());
+        GaussdbWrapperRowData gaussdbWrapperRowData = null;
+        int fieldCount = rowData.getArity();
+        if (rowData instanceof GaussdbWrapperRowData) {
+            gaussdbWrapperRowData = (GaussdbWrapperRowData) rowData;
+            rowData = gaussdbWrapperRowData.getRowData();
+            fieldCount = gaussdbWrapperRowData.getArity();
+        }
+        for (int index = 0; index < fieldCount; index++) {
+            Integer rowIndex = index;
+            if (gaussdbWrapperRowData != null) {
+                rowIndex = gaussdbWrapperRowData.getFieldIndex(index);
             }
-            toExternalConverters[sourceIndex].serialize(genericRowData, index, statement);
+            toExternalConverters[rowIndex].serialize(rowData, rowIndex, index, statement);
         }
         return statement;
     }

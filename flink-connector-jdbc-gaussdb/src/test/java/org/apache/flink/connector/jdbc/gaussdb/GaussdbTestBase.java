@@ -18,7 +18,7 @@
 
 package org.apache.flink.connector.jdbc.gaussdb;
 
-import org.apache.flink.connector.jdbc.gaussdb.testutils.GaussdbDatabase;
+import org.apache.flink.connector.jdbc.gaussdb.testutils.GaussdbMetadata;
 import org.apache.flink.connector.jdbc.testutils.DatabaseMetadata;
 import org.apache.flink.connector.jdbc.testutils.DatabaseTest;
 
@@ -34,7 +34,7 @@ public interface GaussdbTestBase extends DatabaseTest {
 
     @Override
     default DatabaseMetadata getMetadata() {
-        //        return new GaussdbMetadata(USERNAME, PASSWORD, URL, DRIVER, VERSION, false);
-        return GaussdbDatabase.getMetadata();
+        return new GaussdbMetadata(USERNAME, PASSWORD, URL, DRIVER, VERSION, false);
+        //        return GaussdbDatabase.getMetadata();
     }
 }

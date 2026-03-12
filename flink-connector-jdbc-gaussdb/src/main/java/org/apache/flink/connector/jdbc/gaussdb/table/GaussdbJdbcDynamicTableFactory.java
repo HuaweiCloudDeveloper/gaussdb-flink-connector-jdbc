@@ -30,25 +30,16 @@ import org.apache.flink.connector.jdbc.core.table.source.JdbcDynamicTableSource;
 import org.apache.flink.connector.jdbc.gaussdb.table.sink.GaussdbJdbcDynamicTableSink;
 import org.apache.flink.connector.jdbc.internal.options.InternalJdbcConnectionOptions;
 import org.apache.flink.connector.jdbc.internal.options.JdbcDmlOptions;
-import org.apache.flink.connector.jdbc.internal.options.JdbcReadOptions;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
-import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.lookup.LookupOptions;
-import org.apache.flink.table.connector.source.lookup.cache.DefaultLookupCache;
-import org.apache.flink.table.connector.source.lookup.cache.LookupCache;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
-import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
 
-import javax.annotation.Nullable;
-
-import java.time.Duration;
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -83,8 +74,7 @@ import static org.apache.flink.connector.jdbc.utils.JdbcUtils.getConnectionPrope
  * JdbcDynamicTableSink}.
  */
 @Internal
-public class GaussdbJdbcDynamicTableFactory
-        implements DynamicTableSourceFactory, DynamicTableSinkFactory {
+public class GaussdbJdbcDynamicTableFactory implements DynamicTableSinkFactory {
 
     public static final String IDENTIFIER = "gaussdb";
 
@@ -112,29 +102,6 @@ public class GaussdbJdbcDynamicTableFactory
                         context.getPhysicalRowDataType(),
                         context.getPrimaryKeyIndexes()),
                 getGaussdbExtendOptions(config),
-                context.getPhysicalRowDataType());
-    }
-
-    @Override
-    public DynamicTableSource createDynamicTableSource(Context context) {
-        final FactoryUtil.TableFactoryHelper helper =
-                FactoryUtil.createTableFactoryHelper(this, context);
-        final ReadableConfig config = helper.getOptions();
-
-        helper.validate();
-        validateConfigOptions(config, context.getClassLoader());
-        validateDataTypeWithJdbcDialect(
-                context.getPhysicalRowDataType(),
-                config.get(URL),
-                config.get(COMPATIBLE_MODE),
-                context.getClassLoader());
-        final String tableIdentifier = context.getObjectIdentifier().asSummaryString();
-        return new JdbcDynamicTableSource(
-                getJdbcOptions(helper.getOptions(), context.getClassLoader()),
-                getJdbcReadOptions(helper.getOptions()),
-                helper.getOptions().get(LookupOptions.MAX_RETRIES),
-                getLookupCache(config),
-                helper.getOptions().get(FILTER_HANDLING_POLICY),
                 context.getPhysicalRowDataType());
     }
 
@@ -168,21 +135,6 @@ public class GaussdbJdbcDynamicTableFactory
         return builder.build();
     }
 
-    private JdbcReadOptions getJdbcReadOptions(ReadableConfig readableConfig) {
-        final Optional<String> partitionColumnName =
-                readableConfig.getOptional(SCAN_PARTITION_COLUMN);
-        final JdbcReadOptions.Builder builder = JdbcReadOptions.builder();
-        if (partitionColumnName.isPresent()) {
-            builder.setPartitionColumnName(partitionColumnName.get());
-            builder.setPartitionLowerBound(readableConfig.get(SCAN_PARTITION_LOWER_BOUND));
-            builder.setPartitionUpperBound(readableConfig.get(SCAN_PARTITION_UPPER_BOUND));
-            builder.setNumPartitions(readableConfig.get(SCAN_PARTITION_NUM));
-        }
-        readableConfig.getOptional(SCAN_FETCH_SIZE).ifPresent(builder::setFetchSize);
-        builder.setAutoCommit(readableConfig.get(SCAN_AUTO_COMMIT));
-        return builder.build();
-    }
-
     private JdbcExecutionOptions getJdbcExecutionOptions(ReadableConfig config) {
         final JdbcExecutionOptions.Builder builder = new JdbcExecutionOptions.Builder();
         builder.withBatchSize(config.get(SINK_BUFFER_FLUSH_MAX_ROWS));
@@ -211,27 +163,6 @@ public class GaussdbJdbcDynamicTableFactory
         return GaussdbExtendOptions.builder()
                 .withIgnoreNullWhenUpdate(config.get(SINK_IGNORE_NULL_WHEN_UPDATE))
                 .build();
-    }
-
-    @Nullable
-    private LookupCache getLookupCache(ReadableConfig tableOptions) {
-        LookupCache cache = null;
-        // Legacy cache options
-        if (tableOptions.get(LOOKUP_CACHE_MAX_ROWS) > 0
-                && tableOptions.get(LOOKUP_CACHE_TTL).compareTo(Duration.ZERO) > 0) {
-            cache =
-                    DefaultLookupCache.newBuilder()
-                            .maximumSize(tableOptions.get(LOOKUP_CACHE_MAX_ROWS))
-                            .expireAfterWrite(tableOptions.get(LOOKUP_CACHE_TTL))
-                            .cacheMissingKey(tableOptions.get(LOOKUP_CACHE_MISSING_KEY))
-                            .build();
-        }
-        if (tableOptions
-                .get(LookupOptions.CACHE_TYPE)
-                .equals(LookupOptions.LookupCacheType.PARTIAL)) {
-            cache = DefaultLookupCache.fromConfig(tableOptions);
-        }
-        return cache;
     }
 
     @Override
