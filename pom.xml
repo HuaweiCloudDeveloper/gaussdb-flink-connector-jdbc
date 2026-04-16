@@ -36,6 +36,8 @@ under the License.
 
     <modules>
         <module>flink-connector-jdbc-gaussdb</module>
+        <module>flink-connector-jdbc-gaussdb-1.17</module>
+        <module>flink-connector-gaussdb-cdc-1.17</module>
     </modules>
 
     <properties>
