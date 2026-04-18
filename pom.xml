@@ -58,6 +58,10 @@ under the License.
 
         <flink.parent.artifactId>flink-connector-jdbc-gaussdb-parent</flink.parent.artifactId>
         <spotless.skip>false</spotless.skip>
+
+        <!-- JaCoCo coverage properties -->
+        <flink.XmxUnitTest>2048m</flink.XmxUnitTest>
+        <flink.XmxITCase>2048m</flink.XmxITCase>
     </properties>
 
     <dependencies>
@@ -403,6 +407,38 @@ under the License.
                 <groupId>org.commonjava.maven.plugins</groupId>
                 <artifactId>directory-maven-plugin</artifactId>
             </plugin>
+
+            <!-- Jacoco Code Coverage Plugin -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.11</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                        <configuration>
+                            <propertyName>flink.surefire.baseArgLine</propertyName>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report-aggregate</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report-aggregate</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
 
         <pluginManagement>
@@ -459,7 +495,7 @@ under the License.
                             <project.basedir>${project.basedir}</project.basedir>
                             <junit.jupiter.extensions.autodetection.enabled>true</junit.jupiter.extensions.autodetection.enabled>
                         </systemPropertyVariables>
-                        <argLine>-Xms256m -Xmx2048m -XX:+UseG1GC</argLine>
+                        <argLine>@{flink.surefire.baseArgLine} -Xms256m -Xmx2048m -XX:+UseG1GC</argLine>
                     </configuration>
                     <executions>
                         <execution>
@@ -477,7 +513,7 @@ under the License.
                                     <exclude>${additionalExcludes}</exclude>
                                 </excludes>
                                 <forkCount>1</forkCount>
-                                <argLine>${flink.surefire.baseArgLine} -Xmx${flink.XmxUnitTest}</argLine>
+                                <argLine>@{flink.surefire.baseArgLine} -Xmx${flink.XmxUnitTest}</argLine>
                             </configuration>
                         </execution>
                         <execution>
@@ -496,7 +532,7 @@ under the License.
                                     <exclude>${additionalExcludes}</exclude>
                                 </excludes>
                                 <forkCount>1</forkCount>
-                                <argLine>${flink.surefire.baseArgLine} -Xmx${flink.XmxITCase}</argLine>
+                                <argLine>@{flink.surefire.baseArgLine} -Xmx${flink.XmxITCase}</argLine>
                                 <reuseForks>false</reuseForks>
                             </configuration>
                         </execution>

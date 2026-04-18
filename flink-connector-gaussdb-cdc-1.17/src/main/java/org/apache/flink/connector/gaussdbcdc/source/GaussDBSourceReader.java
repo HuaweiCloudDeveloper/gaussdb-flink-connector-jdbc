@@ -135,12 +135,12 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
     private void readAllData(ReaderOutput<RowData> output) throws SQLException {
         String columns = getTableColumns();
         String sql = String.format("SELECT %s FROM %s.%s ORDER BY id", columns, schema, tableName);
-        
+
         LOG.info("Reading all data from {}.{} with query: {}", schema, tableName, sql);
-        
+
         int count = 0;
         try (PreparedStatement stmt = connection.prepareStatement(sql);
-             ResultSet rs = stmt.executeQuery()) {
+                ResultSet rs = stmt.executeQuery()) {
             ResultSetMetaData meta = rs.getMetaData();
             while (rs.next()) {
                 RowData row = convertToRowDataDynamic(rs, meta);
@@ -148,7 +148,7 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
                 count++;
             }
         }
-        
+
         LOG.info("Read {} rows from {}.{}", count, schema, tableName);
         snapshotFinished = true;
     }
