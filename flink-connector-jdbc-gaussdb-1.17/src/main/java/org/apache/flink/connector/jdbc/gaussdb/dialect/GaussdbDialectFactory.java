@@ -25,30 +25,19 @@ import org.apache.flink.connector.jdbc.dialect.JdbcDialectFactory;
 /**
  * Factory for {@link GaussdbDialect}.
  *
- * <p>Notes: Based on PostgresDialectFactory for Flink 1.17.
- *
- * <p>Supports two UPSERT syntax modes:
- *
- * <ul>
- *   <li>PostgreSQL native: ON CONFLICT ... DO UPDATE (default)
- *   <li>MySQL compatible: ON DUPLICATE KEY UPDATE (use url with ?compatibleMode=mysql)
- * </ul>
+ * <p>GaussDB uses ON DUPLICATE KEY UPDATE for upsert across all compatibility modes (PG, A, B, M),
+ * as it does not support PostgreSQL's ON CONFLICT syntax.
  */
 @Internal
 public class GaussdbDialectFactory implements JdbcDialectFactory {
 
-    private String url;
-
     @Override
     public boolean acceptsURL(String url) {
-        this.url = url;
         return url.startsWith("jdbc:gaussdb:");
     }
 
     @Override
     public JdbcDialect create() {
-        // Check if MySQL compatible mode is enabled via URL parameter
-        boolean useMysqlCompatibleUpsert = url != null && url.contains("compatibleMode=mysql");
-        return new GaussdbDialect(useMysqlCompatibleUpsert);
+        return new GaussdbDialect();
     }
 }

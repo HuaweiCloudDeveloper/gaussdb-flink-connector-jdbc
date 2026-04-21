@@ -22,6 +22,8 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.ReaderOutput;
 import org.apache.flink.api.connector.source.SourceReader;
 import org.apache.flink.api.connector.source.SourceReaderContext;
+import org.apache.flink.connector.gaussdbcdc.source.wal.WalChange;
+import org.apache.flink.connector.gaussdbcdc.source.wal.WalReplicationStream;
 import org.apache.flink.core.io.InputStatus;
 import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.GenericRowData;
@@ -69,6 +71,11 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
     private final String slotName;
     private final String pluginName;
     private final int pollIntervalMs;
+    private final boolean walMode;
+    private final String decodePlugin;
+    private final int parallelDecodeNum;
+    private final String decodeStyle;
+    private final boolean sendingBatch;
 
     private Connection connection;
     private GaussDBSplit currentSplit;
@@ -76,8 +83,11 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
     private long lastPolledId = 0;
     private volatile boolean running = true;
 
-    // Change data poller for capturing INSERT/UPDATE/DELETE
+    // Change data poller for polling-based CDC
     private ChangeDataPoller changeDataPoller;
+
+    // WAL replication stream for WAL-based CDC
+    private WalReplicationStream walReplicationStream;
 
     public GaussDBSourceReader(
             SourceReaderContext context,
@@ -90,7 +100,12 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
             String password,
             String slotName,
             String pluginName,
-            int pollIntervalMs) {
+            int pollIntervalMs,
+            boolean walMode,
+            String decodePlugin,
+            int parallelDecodeNum,
+            String decodeStyle,
+            boolean sendingBatch) {
         this.context = context;
         this.hostname = hostname;
         this.port = port;
@@ -102,6 +117,11 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
         this.slotName = slotName;
         this.pluginName = pluginName;
         this.pollIntervalMs = pollIntervalMs;
+        this.walMode = walMode;
+        this.decodePlugin = decodePlugin;
+        this.parallelDecodeNum = parallelDecodeNum;
+        this.decodeStyle = decodeStyle;
+        this.sendingBatch = sendingBatch;
     }
 
     @Override
@@ -117,8 +137,28 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
                             hostname, port, database);
             this.connection = DriverManager.getConnection(url, username, password);
 
-            // Initialize change data poller
-            this.changeDataPoller = new ChangeDataPoller(connection, schema, tableName, "id");
+            // Initialize CDC mode based on walMode setting
+            if (walMode) {
+                // WAL logical decoding mode
+                this.walReplicationStream =
+                        new WalReplicationStream(
+                                connection,
+                                slotName,
+                                decodePlugin,
+                                parallelDecodeNum,
+                                decodeStyle,
+                                sendingBatch,
+                                1000);
+                LOG.info(
+                        "Using WAL mode with plugin={}, parallel-decode-num={}, decode-style={}",
+                        decodePlugin,
+                        parallelDecodeNum,
+                        decodeStyle);
+            } else {
+                // Polling-based CDC mode
+                this.changeDataPoller = new ChangeDataPoller(connection, schema, tableName, "id");
+                LOG.info("Using polling-based CDC mode");
+            }
 
             LOG.info(
                     "Connected to GaussDB at {}:{}/{} for table {}",
@@ -228,9 +268,113 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
     }
 
     private InputStatus pollChanges(ReaderOutput<RowData> output) throws Exception {
+        if (walMode) {
+            return pollChangesFromWal(output);
+        } else {
+            return pollChangesFromPoller(output);
+        }
+    }
+
+    /** Poll changes from WAL logical decoding stream. */
+    private InputStatus pollChangesFromWal(ReaderOutput<RowData> output) throws Exception {
+        List<WalChange> changes = walReplicationStream.readChanges(1000);
+
+        for (WalChange change : changes) {
+            if (!change.isDataChange()) {
+                continue;
+            }
+
+            WalChange.ChangeType changeType = change.getType();
+            if (changeType == WalChange.ChangeType.INSERT) {
+                RowData insertRow = convertWalColumnsToRowData(change.getAfterColumns());
+                if (insertRow != null) {
+                    output.collect(insertRow);
+                }
+            } else if (changeType == WalChange.ChangeType.UPDATE) {
+                // For UPDATE, emit the after image as INSERT
+                RowData updateRow = convertWalColumnsToRowData(change.getAfterColumns());
+                if (updateRow != null) {
+                    output.collect(updateRow);
+                }
+            } else if (changeType == WalChange.ChangeType.DELETE) {
+                // For DELETE, log but don't emit (Flink 1.17 streaming limitation)
+                LOG.debug("Detected DELETE on {}.{}", change.getSchema(), change.getTable());
+            }
+        }
+
+        if (!changes.isEmpty()) {
+            LOG.debug("Polled {} WAL changes", changes.size());
+            return InputStatus.MORE_AVAILABLE;
+        } else {
+            Thread.sleep(pollIntervalMs);
+            return InputStatus.NOTHING_AVAILABLE;
+        }
+    }
+
+    /** Convert WAL column values to Flink RowData. */
+    private RowData convertWalColumnsToRowData(List<WalChange.ColumnValue> columns) {
+        if (columns == null || columns.isEmpty()) {
+            return null;
+        }
+        GenericRowData row = new GenericRowData(columns.size());
+        for (int i = 0; i < columns.size(); i++) {
+            WalChange.ColumnValue col = columns.get(i);
+            if (col.isNull()) {
+                row.setField(i, null);
+                continue;
+            }
+            // Value is already in string format from mppdb_decoding
+            // Convert based on type OID
+            Object value = convertColumnValueByOid(col.getTypeOid(), col.getValue());
+            row.setField(i, value);
+        }
+        return row;
+    }
+
+    /** Convert a column value string based on PostgreSQL/GaussDB type OID. */
+    private Object convertColumnValueByOid(int typeOid, String value) {
+        if (value == null) {
+            return null;
+        }
+        // Common PostgreSQL type OIDs
+        // 23=int4, 20=int8, 21=int2, 16=bool, 25=text, 1043=varchar
+        // 700=float4, 701=float8, 1700=numeric, 1082=date, 1114=timestamp
+        switch (typeOid) {
+            case 23: // int4
+            case 21: // int2
+                return Integer.parseInt(value);
+            case 20: // int8
+                return Long.parseLong(value);
+            case 16: // bool
+                return Boolean.parseBoolean(value);
+            case 700: // float4
+                return Float.parseFloat(value);
+            case 701: // float8
+                return Double.parseDouble(value);
+            case 25: // text
+            case 1043: // varchar
+            case 19: // name
+                return StringData.fromString(value);
+            case 1700: // numeric
+                return DecimalData.fromBigDecimal(new java.math.BigDecimal(value), 38, 18);
+            case 1114: // timestamp
+                return TimestampData.fromLocalDateTime(
+                        java.time.LocalDateTime.parse(
+                                value,
+                                java.time.format.DateTimeFormatter.ofPattern(
+                                        "yyyy-MM-dd HH:mm:ss[.SSSSSS]")));
+            case 1082: // date
+                return (int) java.time.LocalDate.parse(value).toEpochDay();
+            default:
+                // Fallback to string
+                return StringData.fromString(value);
+        }
+    }
+
+    /** Poll changes using ChangeDataPoller (polling-based CDC). */
+    private InputStatus pollChangesFromPoller(ReaderOutput<RowData> output) throws Exception {
         // Use ChangeDataPoller to capture INSERT/UPDATE/DELETE
         List<ChangeEvent<RowData>> events = changeDataPoller.pollAllChanges();
-
         int insertCount = 0;
         int updateCount = 0;
         int deleteCount = 0;
@@ -367,6 +511,9 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
     @Override
     public void close() throws Exception {
         running = false;
+        if (walReplicationStream != null) {
+            walReplicationStream.close();
+        }
         if (connection != null && !connection.isClosed()) {
             connection.close();
             LOG.info("Closed GaussDB connection");

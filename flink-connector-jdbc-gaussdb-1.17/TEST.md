@@ -7,6 +7,172 @@
 - **JDBC Connector**: flink-connector-jdbc-gaussdb-1.17-4.0-SNAPSHOT.jar
 - **GaussDB 驱动**: gaussdbjdbc-JRE7.jar
 
+## 当前支持能力
+
+### 1. 执行模式支持
+
+| 模式 | 支持状态 | 说明 |
+|------|---------|------|
+| **批模式 (Batch)** | ✅ 支持 | 一次性读取/写入全量数据 |
+| **流模式 (Streaming)** | ✅ 支持 | 持续增量读取（需配合分区或轮询配置） |
+
+### 2. 数据操作语义
+
+| 操作类型 | 支持状态 | 说明 |
+|---------|---------|------|
+| **INSERT** | ✅ 支持 | 插入新数据 |
+| **UPSERT** | ✅ 支持 | 主键存在则更新，不存在则插入 |
+| **SELECT** | ✅ 支持 | 支持投影、过滤、聚合等标准 SQL |
+| **DELETE** | ❌ 不支持 | Flink 1.17 流模式限制 |
+| **UPDATE** | ❌ 不支持 | Flink 1.17 流模式限制 |
+
+### 3. 数据类型支持
+
+| GaussDB 类型 | Flink 类型 | 支持状态 |
+|-------------|-----------|---------|
+| INT / INTEGER | INT | ✅ |
+| BIGINT | BIGINT | ✅ |
+| VARCHAR / TEXT | STRING | ✅ |
+| DECIMAL / NUMERIC | DECIMAL | ✅ |
+| DATE | DATE | ✅ |
+| TIMESTAMP | TIMESTAMP | ✅ |
+| BOOLEAN | BOOLEAN | ✅ |
+| DOUBLE / FLOAT | DOUBLE | ✅ |
+| 数组类型 | ARRAY | ✅ |
+
+## 验证场景与参数配置
+
+### 场景 1: 批模式全量读取 (Source)
+
+**场景描述**: 一次性读取 GaussDB 表全量数据
+
+**必需参数**:
+```sql
+'connector' = 'gaussdb',           -- 固定值
+'url' = 'jdbc:gaussdb://<host>:<port>/<database>?compatibleMode=mysql',
+'table-name' = '<table_name>',     -- 表名
+'username' = '<username>',         -- 用户名
+'password' = '<password>'          -- 密码
+```
+
+**可选参数**:
+```sql
+'scan.fetch-size' = '100',         -- 每次获取行数，默认 0
+'scan.auto-commit' = 'true'        -- 自动提交，默认 true
+```
+
+---
+
+### 场景 2: 流模式增量读取 (Source)
+
+**场景描述**: 持续轮询读取增量数据
+
+**必需参数**: 同场景 1
+
+**可选参数**:
+```sql
+'scan.partition.column' = 'id',    -- 分区列名（用于并行读取）
+'scan.partition.num' = '4',        -- 分区数量
+'scan.partition.lower-bound' = '1', -- 分区下界
+'scan.partition.upper-bound' = '1000' -- 分区上界
+```
+
+> **注意**: 流模式实际为周期性批处理，需配合分区或增量字段实现"增量"效果
+
+---
+
+### 场景 3: 批量写入 (Sink)
+
+**场景描述**: 批量写入数据到 GaussDB
+
+**必需参数**:
+```sql
+'connector' = 'gaussdb',
+'url' = 'jdbc:gaussdb://<host>:<port>/<database>?compatibleMode=mysql',
+'table-name' = '<table_name>',
+'username' = '<username>',
+'password' = '<password>'
+```
+
+**可选参数**:
+```sql
+'sink.buffer-flush.max-rows' = '100',    -- 缓冲最大行数，默认 100
+'sink.buffer-flush.interval' = '1s',     -- 刷新间隔，默认 1s
+'sink.max-retries' = '3'                 -- 最大重试次数，默认 3
+```
+
+---
+
+### 场景 4: UPSERT 写入 (Sink)
+
+**场景描述**: 主键冲突时更新，否则插入
+
+**必需参数**: 同场景 3
+
+**关键要求**:
+- 表必须定义主键 (`PRIMARY KEY (id) NOT ENFORCED`)
+- 底层使用 `INSERT ... ON DUPLICATE KEY UPDATE` 语法
+
+**示例**:
+```sql
+CREATE TABLE student_sink (
+    id INT,
+    name STRING,
+    PRIMARY KEY (id) NOT ENFORCED   -- 必须定义主键
+) WITH (
+    'connector' = 'gaussdb',
+    'url' = 'jdbc:gaussdb://...',
+    'table-name' = 'student',
+    'username' = 'root',
+    'password' = 'xxx'
+);
+
+-- UPSERT 操作：主键存在则更新，不存在则插入
+INSERT INTO student_sink VALUES (1, '张三');
+INSERT INTO student_sink VALUES (1, '张三更新');  -- 触发更新
+```
+
+---
+
+### 场景 5: 数据类型映射验证
+
+**场景描述**: 验证 GaussDB 与 Flink 类型映射
+
+**测试表结构**:
+```sql
+CREATE TABLE type_test (
+    col_int INT,
+    col_bigint BIGINT,
+    col_varchar VARCHAR(100),
+    col_decimal DECIMAL(10,2),
+    col_date DATE,
+    col_timestamp TIMESTAMP,
+    col_bool BOOLEAN,
+    col_double DOUBLE
+);
+```
+
+**参数配置**: 标准 Source/Sink 参数
+
+---
+
+### 场景 6: 聚合查询 (Source)
+
+**场景描述**: 验证 Source 支持 Flink SQL 聚合操作
+
+**支持操作**:
+- `GROUP BY` 分组聚合
+- `COUNT`, `SUM`, `AVG`, `MAX`, `MIN` 等聚合函数
+- `WHERE` 条件过滤
+
+**限制**:
+- 流模式下 `ORDER BY` 仅支持时间字段
+- 非时间字段 `ORDER BY` 仅在批模式支持
+
+---
+
+## 前置条件
+
 ## 前置条件
 
 ### 1. 准备测试表
@@ -217,11 +383,57 @@ GROUP BY class_name;
 - 支持批量写入
 - 支持标准 SQL 查询（过滤、聚合等）
 
+## 完整参数列表
+
+### Source 参数
+
+| 参数名 | 是否必需 | 默认值 | 说明 |
+|-------|---------|-------|------|
+| `connector` | 是 | - | 固定值 `gaussdb` |
+| `url` | 是 | - | JDBC URL，格式 `jdbc:gaussdb://host:port/db?compatibleMode=mysql` |
+| `table-name` | 是 | - | GaussDB 表名 |
+| `username` | 是 | - | 数据库用户名 |
+| `password` | 是 | - | 数据库密码 |
+| `driver` | 否 | - | JDBC 驱动类名 |
+| `scan.fetch-size` | 否 | 0 | 每次从数据库获取的行数 |
+| `scan.auto-commit` | 否 | true | 是否自动提交 |
+| `scan.partition.column` | 否 | - | 分区列名（用于并行读取） |
+| `scan.partition.num` | 否 | - | 分区数量 |
+| `scan.partition.lower-bound` | 否 | - | 分区下界 |
+| `scan.partition.upper-bound` | 否 | - | 分区上界 |
+
+### Sink 参数
+
+| 参数名 | 是否必需 | 默认值 | 说明 |
+|-------|---------|-------|------|
+| `connector` | 是 | - | 固定值 `gaussdb` |
+| `url` | 是 | - | JDBC URL |
+| `table-name` | 是 | - | GaussDB 表名 |
+| `username` | 是 | - | 数据库用户名 |
+| `password` | 是 | - | 数据库密码 |
+| `sink.buffer-flush.max-rows` | 否 | 100 | 缓冲最大行数 |
+| `sink.buffer-flush.interval` | 否 | 1s | 缓冲刷新间隔 |
+| `sink.max-retries` | 否 | 3 | 写入失败最大重试次数 |
+| `sink.parallelism` | 否 | - | Sink 并行度 |
+
+---
+
 ## 已知限制
 
-1. **Flink 1.17 流模式不支持 DELETE/UPDATE**: 这是 Flink SQL 引擎的限制，不是 Connector 的问题
-2. **必须重启 Flink 集群**: 添加新的 JAR 包到 lib 目录后，必须重启 Flink 集群才能生效
-3. **必须使用 GaussDB 方言**: Connector 标识符为 `gaussdb`，不是 `jdbc`
+### 1. Flink 1.17 流模式限制
+- **DELETE 不支持**: Flink 1.17 流模式 SQL 不支持 DELETE 操作
+- **UPDATE 不支持**: Flink 1.17 流模式 SQL 不支持 UPDATE 操作
+- **ORDER BY 限制**: 流模式下 `ORDER BY` 仅支持时间字段，非时间字段排序仅在批模式支持
+
+> 这些是 Flink SQL 引擎的限制，不是 Connector 本身的问题
+
+### 2. 部署限制
+- **必须重启 Flink 集群**: 添加新的 JAR 包到 lib 目录后，必须重启 Flink 集群才能生效
+- **lib 目录部署**: 不支持 `ADD JAR` 动态加载，必须放置到 `$FLINK_HOME/lib/`
+
+### 3. 方言限制
+- **必须使用 `gaussdb` 标识符**: 不能使用通用的 `jdbc` connector 名称
+- **MySQL 兼容模式**: URL 中必须包含 `compatibleMode=mysql` 参数
 
 ## 附录
 

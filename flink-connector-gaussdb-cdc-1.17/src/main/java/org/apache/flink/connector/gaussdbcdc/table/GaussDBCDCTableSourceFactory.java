@@ -63,6 +63,11 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
         options.add(GaussDBCDCOptions.CHUNK_SIZE);
         options.add(GaussDBCDCOptions.CONNECT_TIMEOUT_MS);
         options.add(GaussDBCDCOptions.POLL_INTERVAL_MS);
+        options.add(GaussDBCDCOptions.WAL_MODE);
+        options.add(GaussDBCDCOptions.DECODE_PLUGIN);
+        options.add(GaussDBCDCOptions.PARALLEL_DECODE_NUM);
+        options.add(GaussDBCDCOptions.DECODE_STYLE);
+        options.add(GaussDBCDCOptions.SENDING_BATCH);
         return options;
     }
 
@@ -84,6 +89,11 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
         String slotName = config.get(GaussDBCDCOptions.SLOT_NAME);
         boolean snapshotMode = config.get(GaussDBCDCOptions.SNAPSHOT_MODE);
         int pollIntervalMs = config.get(GaussDBCDCOptions.POLL_INTERVAL_MS);
+        boolean walMode = config.get(GaussDBCDCOptions.WAL_MODE);
+        String decodePlugin = config.get(GaussDBCDCOptions.DECODE_PLUGIN);
+        int parallelDecodeNum = config.get(GaussDBCDCOptions.PARALLEL_DECODE_NUM);
+        String decodeStyle = config.get(GaussDBCDCOptions.DECODE_STYLE);
+        boolean sendingBatch = config.get(GaussDBCDCOptions.SENDING_BATCH);
 
         DataType physicalRowDataType = context.getPhysicalRowDataType();
 
@@ -98,6 +108,11 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
                 slotName,
                 snapshotMode,
                 pollIntervalMs,
+                walMode,
+                decodePlugin,
+                parallelDecodeNum,
+                decodeStyle,
+                sendingBatch,
                 physicalRowDataType);
     }
 }

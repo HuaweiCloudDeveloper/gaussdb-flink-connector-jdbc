@@ -20,8 +20,8 @@ package org.apache.flink.connector.gaussdbcdc.source.wal;
 
 import org.apache.flink.annotation.Internal;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 
 /** Represents a single change from the WAL (Write-Ahead Log). */
 @Internal
@@ -36,18 +36,123 @@ public class WalChange {
         UNKNOWN
     }
 
+    /** Represents a single column value in a WAL change event. */
+    public static class ColumnValue {
+        private final String columnName;
+        private final int typeOid;
+        private final String value;
+        private final boolean isNull;
+
+        public ColumnValue(String columnName, int typeOid, String value, boolean isNull) {
+            this.columnName = columnName;
+            this.typeOid = typeOid;
+            this.value = value;
+            this.isNull = isNull;
+        }
+
+        public String getColumnName() {
+            return columnName;
+        }
+
+        public int getTypeOid() {
+            return typeOid;
+        }
+
+        public String getValue() {
+            return value;
+        }
+
+        public boolean isNull() {
+            return isNull;
+        }
+
+        @Override
+        public String toString() {
+            return "ColumnValue{"
+                    + "columnName='"
+                    + columnName
+                    + '\''
+                    + ", typeOid="
+                    + typeOid
+                    + ", value='"
+                    + (isNull ? "NULL" : value)
+                    + '\''
+                    + '}';
+        }
+    }
+
     private String lsn;
     private long xid;
     private ChangeType type;
     private String schema;
     private String table;
-    private Map<String, Object> before;
-    private Map<String, Object> after;
+    private List<ColumnValue> beforeColumns;
+    private List<ColumnValue> afterColumns;
     private String rawData;
+    private long csn;
 
     public WalChange() {
-        this.before = new HashMap<>();
-        this.after = new HashMap<>();
+        this.beforeColumns = new ArrayList<>();
+        this.afterColumns = new ArrayList<>();
+    }
+
+    public static WalChange begin(String lsn, long xid, long csn) {
+        WalChange change = new WalChange();
+        change.setLsn(lsn);
+        change.setXid(xid);
+        change.setType(ChangeType.BEGIN);
+        change.setCsn(csn);
+        return change;
+    }
+
+    public static WalChange commit(String lsn, long xid) {
+        WalChange change = new WalChange();
+        change.setLsn(lsn);
+        change.setXid(xid);
+        change.setType(ChangeType.COMMIT);
+        return change;
+    }
+
+    public static WalChange insert(
+            String lsn, long xid, String schema, String table, List<ColumnValue> columns) {
+        WalChange change = new WalChange();
+        change.setLsn(lsn);
+        change.setXid(xid);
+        change.setType(ChangeType.INSERT);
+        change.setSchema(schema);
+        change.setTable(table);
+        change.setAfterColumns(columns);
+        return change;
+    }
+
+    public static WalChange update(
+            String lsn,
+            long xid,
+            String schema,
+            String table,
+            List<ColumnValue> beforeColumns,
+            List<ColumnValue> afterColumns) {
+        WalChange change = new WalChange();
+        change.setLsn(lsn);
+        change.setXid(xid);
+        change.setType(ChangeType.UPDATE);
+        change.setSchema(schema);
+        change.setTable(table);
+        change.setBeforeColumns(beforeColumns);
+        change.setAfterColumns(afterColumns);
+        return change;
+    }
+
+    public static WalChange delete(
+            String lsn, long xid, String schema, String table, List<ColumnValue> columns) {
+        WalChange change = new WalChange();
+        change.setLsn(lsn);
+        change.setXid(xid);
+        change.setType(ChangeType.DELETE);
+        change.setSchema(schema);
+        change.setTable(table);
+        change.setBeforeColumns(columns);
+        return change;
     }
 
     public String getLsn() {
@@ -90,20 +195,28 @@ public class WalChange {
         this.table = table;
     }
 
-    public Map<String, Object> getBefore() {
-        return before;
+    public List<ColumnValue> getBeforeColumns() {
+        return beforeColumns;
     }
 
-    public void setBefore(Map<String, Object> before) {
-        this.before = before;
+    public void setBeforeColumns(List<ColumnValue> beforeColumns) {
+        this.beforeColumns = beforeColumns;
     }
 
-    public Map<String, Object> getAfter() {
-        return after;
+    public List<ColumnValue> getAfterColumns() {
+        return afterColumns;
     }
 
-    public void setAfter(Map<String, Object> after) {
-        this.after = after;
+    public void setAfterColumns(List<ColumnValue> afterColumns) {
+        this.afterColumns = afterColumns;
+    }
+
+    public long getCsn() {
+        return csn;
+    }
+
+    public void setCsn(long csn) {
+        this.csn = csn;
     }
 
     public String getRawData() {

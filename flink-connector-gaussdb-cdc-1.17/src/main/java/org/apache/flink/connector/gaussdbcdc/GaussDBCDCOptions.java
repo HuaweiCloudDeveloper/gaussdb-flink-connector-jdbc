@@ -108,5 +108,48 @@ public class GaussDBCDCOptions {
                     .withDescription(
                             "Time to wait between polling for new changes (in milliseconds).");
 
+    public static final ConfigOption<String> DECODE_PLUGIN =
+            ConfigOptions.key("decode.plugin")
+                    .stringType()
+                    .defaultValue("mppdb_decoding")
+                    .withDescription(
+                            "Logical decoding plugin name. "
+                                    + "Supported: mppdb_decoding (default), pgoutput.");
+
+    public static final ConfigOption<Integer> PARALLEL_DECODE_NUM =
+            ConfigOptions.key("parallel-decode-num")
+                    .intType()
+                    .defaultValue(1)
+                    .withDescription(
+                            "Number of parallel decoder threads for logical decoding. "
+                                    + "Range 1-20, 1 means serial decoding (default).");
+
+    public static final ConfigOption<String> DECODE_STYLE =
+            ConfigOptions.key("decode-style")
+                    .stringType()
+                    .defaultValue("b")
+                    .withDescription(
+                            "Decode output format for parallel decoding. "
+                                    + "'b' = binary (default), 'j' = json, 't' = text. "
+                                    + "Only effective when parallel-decode-num > 1.");
+
+    public static final ConfigOption<Boolean> SENDING_BATCH =
+            ConfigOptions.key("sending-batch")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to batch send decoded results. "
+                                    + "When true, results are accumulated to 1MB before sending. "
+                                    + "Only effective when parallel-decode-num > 1.");
+
+    public static final ConfigOption<Boolean> WAL_MODE =
+            ConfigOptions.key("wal.mode")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to use WAL logical decoding for change capture. "
+                                    + "When false (default), uses polling-based CDC. "
+                                    + "When true, uses WAL logical replication stream.");
+
     private GaussDBCDCOptions() {}
 }

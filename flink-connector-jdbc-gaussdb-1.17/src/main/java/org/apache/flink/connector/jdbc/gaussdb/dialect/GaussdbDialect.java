@@ -41,15 +41,7 @@ public class GaussdbDialect extends AbstractDialect {
 
     private static final long serialVersionUID = 1L;
 
-    private final boolean useMysqlCompatibleUpsert;
-
-    public GaussdbDialect() {
-        this(false);
-    }
-
-    public GaussdbDialect(boolean useMysqlCompatibleUpsert) {
-        this.useMysqlCompatibleUpsert = useMysqlCompatibleUpsert;
-    }
+    public GaussdbDialect() {}
 
     @Override
     public AbstractJdbcRowConverter getRowConverter(RowType rowType) {
@@ -108,43 +100,24 @@ public class GaussdbDialect extends AbstractDialect {
     }
 
     /**
-     * GaussDB upsert query supporting both ON DUPLICATE KEY UPDATE (MySQL compatible) and ON
-     * CONFLICT ... DO UPDATE (PostgreSQL native) syntax.
+     * GaussDB upsert query using ON DUPLICATE KEY UPDATE syntax.
+     *
+     * <p>GaussDB does not support PostgreSQL's ON CONFLICT syntax. Always use ON DUPLICATE KEY
+     * UPDATE which is GaussDB's native upsert syntax.
      */
     @Override
     public Optional<String> getUpsertStatement(
             String tableName, String[] fieldNames, String[] uniqueKeyFields) {
-        String uniqueColumns =
-                Arrays.stream(uniqueKeyFields)
-                        .map(this::quoteIdentifier)
-                        .collect(Collectors.joining(", "));
+        // GaussDB does not support ON CONFLICT, always use ON DUPLICATE KEY UPDATE
         final Set<String> uniqueKeyFieldsSet = new HashSet<>(Arrays.asList(uniqueKeyFields));
-
-        if (useMysqlCompatibleUpsert) {
-            // MySQL compatible syntax: ON DUPLICATE KEY UPDATE
-            // Note: VALUES() must be uppercase in GaussDB B mode
-            String updateClause =
-                    Arrays.stream(fieldNames)
-                            .filter(f -> !uniqueKeyFieldsSet.contains(f))
-                            .map(f -> quoteIdentifier(f) + "=VALUES(" + quoteIdentifier(f) + ")")
-                            .collect(Collectors.joining(", "));
-            return Optional.of(
-                    this.getInsertIntoStatement(tableName, fieldNames)
-                            + " ON DUPLICATE KEY UPDATE "
-                            + updateClause);
-        } else {
-            // PostgreSQL native syntax: ON CONFLICT ... DO UPDATE
-            String updateClause =
-                    Arrays.stream(fieldNames)
-                            .filter(f -> !uniqueKeyFieldsSet.contains(f))
-                            .map(f -> quoteIdentifier(f) + "=EXCLUDED." + quoteIdentifier(f))
-                            .collect(Collectors.joining(", "));
-            return Optional.of(
-                    this.getInsertIntoStatement(tableName, fieldNames)
-                            + " ON CONFLICT ("
-                            + uniqueColumns
-                            + ") DO UPDATE SET "
-                            + updateClause);
-        }
+        String updateClause =
+                Arrays.stream(fieldNames)
+                        .filter(f -> !uniqueKeyFieldsSet.contains(f))
+                        .map(f -> quoteIdentifier(f) + "=VALUES(" + quoteIdentifier(f) + ")")
+                        .collect(Collectors.joining(", "));
+        return Optional.of(
+                this.getInsertIntoStatement(tableName, fieldNames)
+                        + " ON DUPLICATE KEY UPDATE "
+                        + updateClause);
     }
 }

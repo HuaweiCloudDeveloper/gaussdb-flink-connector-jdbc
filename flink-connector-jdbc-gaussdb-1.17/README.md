@@ -10,6 +10,7 @@
 - [版本兼容性](#版本兼容性)
 - [前置条件](#前置条件)
 - [快速开始](#快速开始)
+- [构建打包](#构建打包)
 - [使用说明](#使用说明)
 - [配置参数](#配置参数)
 - [数据类型映射](#数据类型映射)
@@ -23,15 +24,17 @@ Flink GaussDB JDBC Connector 1.17 是专为 Apache Flink 1.17 版本设计的 Ga
 
 ## 核心特性
 
-### 1. 双模式 UPSERT 支持
-- **MySQL 兼容模式**: `ON DUPLICATE KEY UPDATE` - 适用于 GaussDB B 兼容模式
-- **PostgreSQL 原生模式**: `ON CONFLICT ... DO UPDATE` - 适用于 GaussDB 原生模式
-- 通过 URL 参数 `compatibleMode=mysql` 自动切换
+### 1. 统一 UPSERT 语法
 
-### 2. 数据源支持
-- **Source (读取)**: 支持从 GaussDB 查询数据
-- **Sink (写入)**: 支持 INSERT 和 UPSERT 操作
-- 使用 `PostgresRowConverter` 实现 Source 功能（GaussDB 基于 PostgreSQL）
+- **所有兼容模式统一使用** `ON DUPLICATE KEY UPDATE`（MySQL 风格语法）
+- 支持 GaussDB **PG/A/B/M 全部兼容模式**，无需额外配置
+- GaussDB 不支持 PostgreSQL 原生的 `ON CONFLICT ... DO UPDATE` 语法，Connector 已自动适配
+
+### 2. 内置 GaussDB JDBC 驱动
+
+- Connector JAR 已内置 `gaussdbjdbc-506.0.0.b058-jdk7`（兼容 JDK 8/11）
+- **无需单独部署** GaussDB JDBC 驱动到 Flink `lib/` 目录
+- 如需使用流式复制 API（JDK 17+），可替换为完整版驱动
 
 ### 3. 与 2.0+ 版本的区别
 
@@ -69,12 +72,10 @@ Flink GaussDB JDBC Connector 1.17 是专为 Apache Flink 1.17 版本设计的 Ga
 2. **Flink JDBC Connector** (必选)
    - `flink-connector-jdbc-3.1.2-1.17.jar`
 
-3. **GaussDB Connector** (必选)
+3. **GaussDB Connector** (必选，已内置 GaussDB JDBC 驱动)
    - `flink-connector-jdbc-gaussdb-1.17-4.0-SNAPSHOT.jar`
 
-4. **GaussDB JDBC 驱动** (必选)
-   - JDK 8/11: `gaussdbjdbc-506.0.0.b058-jdk7.jar`
-   - JDK 17+: `gaussdbjdbc-506.0.0.b058.jar`
+> **说明**：Connector jar 已通过 maven-shade-plugin 内置 `gaussdbjdbc-506.0.0.b058-jdk7`（兼容 JDK 8/11），无需单独部署 GaussDB JDBC 驱动。
 
 #### MRS 环境说明
 
@@ -82,7 +83,7 @@ Flink GaussDB JDBC Connector 1.17 是专为 Apache Flink 1.17 版本设计的 Ga
 
 **MRS 环境要求**：
 - MRS 集群必须已安装 `flink-connector-base` 和 `flink-connector-jdbc` 组件
-- 只需将 `flink-connector-jdbc-gaussdb-1.17-4.0-SNAPSHOT.jar` 和 GaussDB JDBC 驱动放入 MRS 的 lib 目录
+- 只需将 `flink-connector-jdbc-gaussdb-1.17-4.0-SNAPSHOT.jar` 放入 MRS 的 lib 目录（已内置 GaussDB JDBC 驱动）
 
 ### Maven 依赖
 
@@ -105,11 +106,8 @@ cp flink-connector-base-1.17.2.jar $FLINK_HOME/lib/
 # 2. Flink 官方 JDBC Connector（MRS 环境可跳过）
 cp flink-connector-jdbc-3.1.2-1.17.jar $FLINK_HOME/lib/
 
-# 3. GaussDB Connector（必须）
+# 3. GaussDB Connector（必须，已内置 GaussDB JDBC 驱动）
 cp flink-connector-jdbc-gaussdb-1.17-4.0-SNAPSHOT.jar $FLINK_HOME/lib/
-
-# 4. GaussDB JDBC 驱动（必须）
-cp gaussdbjdbc.jar $FLINK_HOME/lib/
 ```
 
 重启 Flink：
@@ -136,7 +134,7 @@ CREATE TABLE student_sink (
     PRIMARY KEY (id) NOT ENFORCED
 ) WITH (
     'connector' = 'gaussdb',
-    'url' = 'jdbc:gaussdb://localhost:8000/postgres?compatibleMode=mysql',
+    'url' = 'jdbc:gaussdb://localhost:8000/postgres',
     'table-name' = 'student',
     'username' = 'root',
     'password' = 'password',
@@ -160,6 +158,82 @@ INSERT INTO student_sink VALUES (1, 'Alice', 'F', 20);
 INSERT INTO student_sink VALUES (1, 'Alice Updated', 'F', 21), (3, 'Charlie', 'M', 30);
 ```
 
+## 构建打包
+
+### 标准打包（推荐）
+
+默认打包方式，Connector JAR 已内置 GaussDB JDBC 驱动：
+
+```bash
+# 在项目根目录执行
+cd /path/to/gaussdb-flink-connector-jdbc
+mvn clean package -pl flink-connector-jdbc-gaussdb-1.17 -am -DskipTests
+```
+
+打包后产物：
+```
+flink-connector-jdbc-gaussdb-1.17/target/
+└── flink-connector-jdbc-gaussdb-1.17-4.0-SNAPSHOT.jar   (~1.6 MB，已内置驱动)
+```
+
+### 瘦包打包（不内置驱动）
+
+如果环境已单独部署 GaussDB JDBC 驱动，或需要自行管理驱动版本，可打出不含驱动的瘦包：
+
+**步骤 1**：修改 `flink-connector-jdbc-gaussdb-1.17/pom.xml`
+
+```xml
+<!-- 将 gaussdbjdbc 依赖改为 provided -->
+<dependency>
+    <groupId>com.huaweicloud.gaussdb</groupId>
+    <artifactId>gaussdbjdbc</artifactId>
+    <version>${gaussdb.version}</version>
+    <scope>provided</scope>  <!-- 添加这一行 -->
+</dependency>
+```
+
+同时移除 shade 插件中的 `gaussdbjdbc` include：
+
+```xml
+<artifactSet>
+    <includes>
+        <!-- 移除或注释掉这一行 -->
+        <!-- <include>com.huaweicloud.gaussdb:gaussdbjdbc</include> -->
+    </includes>
+</artifactSet>
+```
+
+**步骤 2**：重新打包
+
+```bash
+mvn clean package -pl flink-connector-jdbc-gaussdb-1.17 -am -DskipTests
+```
+
+打包后产物：
+```
+flink-connector-jdbc-gaussdb-1.17/target/
+└── flink-connector-jdbc-gaussdb-1.17-4.0-SNAPSHOT.jar   (~60 KB，不含驱动)
+```
+
+**瘦包部署时**，需将 GaussDB JDBC 驱动单独放入 Flink `lib/` 目录：
+
+```bash
+# 下载驱动（JDK 8/11 兼容版）
+curl -o $FLINK_HOME/lib/gaussdbjdbc.jar \
+  "https://repo1.maven.org/maven2/com/huaweicloud/gaussdb/gaussdbjdbc/506.0.0.b058-jdk7/gaussdbjdbc-506.0.0.b058-jdk7.jar"
+
+# 或 JDK 17+ 完整版
+curl -o $FLINK_HOME/lib/gaussdbjdbc.jar \
+  "https://repo1.maven.org/maven2/com/huaweicloud/gaussdb/gaussdbjdbc/506.0.0.b058/gaussdbjdbc-506.0.0.b058.jar"
+```
+
+### 两种打包方式对比
+
+| 方式 | JAR 大小 | 内置驱动 | 适用场景 |
+|------|---------|---------|---------|
+| 标准打包（fat jar） | ~1.6 MB | ✅ 内置 | 推荐，部署简单，无需管理驱动 |
+| 瘦包（thin jar） | ~60 KB | ❌ 不包含 | 已有驱动管理规范，或需要灵活切换驱动版本 |
+
 ## 使用说明
 
 ### 连接器类型选择
@@ -169,12 +243,25 @@ INSERT INTO student_sink VALUES (1, 'Alice Updated', 'F', 21), (3, 'Charlie', 'M
 | Sink (写入) | `gaussdb` | 使用 GaussDB 专用 Sink，支持 UPSERT |
 | Source (读取) | `jdbc` | 使用标准 JDBC Source |
 
-### UPSERT 语法模式选择
+### UPSERT 语法说明
 
-| GaussDB 模式 | URL 参数 | UPSERT 语法 |
-|-------------|---------|------------|
-| B 兼容模式 (MySQL) | `compatibleMode=mysql` | `ON DUPLICATE KEY UPDATE` |
-| 原生模式 | 无 | `ON CONFLICT ... DO UPDATE` |
+Connector 在所有 GaussDB 兼容模式下统一使用 `ON DUPLICATE KEY UPDATE` 语法：
+
+```sql
+INSERT INTO table (col1, col2) VALUES (?, ?)
+ON DUPLICATE KEY UPDATE col2=VALUES(col2)
+```
+
+**支持的 GaussDB 兼容模式**：
+
+| GaussDB 模式 | sql_compatibility | UPSERT 支持 |
+|-------------|-------------------|------------|
+| PostgreSQL 兼容 | PG | ✅ `ON DUPLICATE KEY UPDATE` |
+| Oracle 兼容 | A | ✅ `ON DUPLICATE KEY UPDATE` |
+| MySQL 兼容 | B | ✅ `ON DUPLICATE KEY UPDATE` |
+| Teradata 兼容 | M | ✅ `ON DUPLICATE KEY UPDATE` |
+
+> **注意**：不再需要 URL 参数 `compatibleMode=mysql` 来控制 UPSERT 语法，Connector 已自动适配。
 
 ## 配置参数
 
@@ -193,8 +280,10 @@ INSERT INTO student_sink VALUES (1, 'Alice Updated', 'F', 21), (3, 'Charlie', 'M
 
 | 参数名 | 说明 | 可选值 |
 |-------|------|-------|
-| compatibleMode | 选择 UPSERT 语法模式 | `mysql` - 使用 `ON DUPLICATE KEY UPDATE`<br>不设置或 `postgresql` - 使用 `ON CONFLICT ... DO UPDATE` |
+| compatibleMode | GaussDB 兼容模式（连接层） | `mysql` / `postgresql` / `oracle` / `td`
 | characterEncoding | 字符编码 | `UTF-8`（推荐） |
+
+> **注意**：`compatibleMode` 参数仅影响 GaussDB 连接层的 SQL 解析兼容性，不再影响 UPSERT 语法。Connector 已统一使用 `ON DUPLICATE KEY UPDATE`。
 
 ### Sink 专用参数
 
@@ -249,7 +338,7 @@ INSERT INTO student_sink VALUES (1, 'Alice Updated', 'F', 21), (3, 'Charlie', 'M
 
 5. **字符编码**：如果遇到乱码问题，可在 JDBC URL 中添加字符编码参数：
    ```
-   jdbc:gaussdb://<host>:<port>/<database>?compatibleMode=mysql&characterEncoding=UTF-8
+   jdbc:gaussdb://<host>:<port>/<database>?characterEncoding=UTF-8
    ```
 
 ### ⚠️ 重要限制
@@ -267,7 +356,7 @@ INSERT INTO student_sink VALUES (1, 'Alice Updated', 'F', 21), (3, 'Charlie', 'M
 A: 请检查：
 1. Flink 表定义中是否声明了 `PRIMARY KEY`
 2. GaussDB 表中是否有主键约束
-3. JDBC URL 中的 `compatibleMode` 参数是否与 GaussDB 兼容模式匹配
+3. 错误信息是否为 `syntax error at or near "CONFLICT"`，如果是，说明使用了旧版 Connector，请升级到当前版本（已统一使用 `ON DUPLICATE KEY UPDATE`）
 
 ### Q: 如何查看生成的 UPSERT SQL？
 

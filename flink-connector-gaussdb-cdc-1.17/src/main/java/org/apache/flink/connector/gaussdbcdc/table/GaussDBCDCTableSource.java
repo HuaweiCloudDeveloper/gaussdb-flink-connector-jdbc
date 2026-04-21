@@ -40,6 +40,11 @@ public class GaussDBCDCTableSource implements ScanTableSource {
     private final String slotName;
     private final boolean snapshotMode;
     private final int pollIntervalMs;
+    private final boolean walMode;
+    private final String decodePlugin;
+    private final int parallelDecodeNum;
+    private final String decodeStyle;
+    private final boolean sendingBatch;
     private final DataType physicalRowDataType;
 
     public GaussDBCDCTableSource(
@@ -53,6 +58,11 @@ public class GaussDBCDCTableSource implements ScanTableSource {
             String slotName,
             boolean snapshotMode,
             int pollIntervalMs,
+            boolean walMode,
+            String decodePlugin,
+            int parallelDecodeNum,
+            String decodeStyle,
+            boolean sendingBatch,
             DataType physicalRowDataType) {
         this.hostname = hostname;
         this.port = port;
@@ -64,6 +74,11 @@ public class GaussDBCDCTableSource implements ScanTableSource {
         this.slotName = slotName;
         this.snapshotMode = snapshotMode;
         this.pollIntervalMs = pollIntervalMs;
+        this.walMode = walMode;
+        this.decodePlugin = decodePlugin;
+        this.parallelDecodeNum = parallelDecodeNum;
+        this.decodeStyle = decodeStyle;
+        this.sendingBatch = sendingBatch;
         this.physicalRowDataType = physicalRowDataType;
     }
 
@@ -87,6 +102,11 @@ public class GaussDBCDCTableSource implements ScanTableSource {
                         .slotName(slotName)
                         .snapshotMode(snapshotMode)
                         .pollIntervalMs(pollIntervalMs)
+                        .walMode(walMode)
+                        .decodePlugin(decodePlugin)
+                        .parallelDecodeNum(parallelDecodeNum)
+                        .decodeStyle(decodeStyle)
+                        .sendingBatch(sendingBatch)
                         .build();
 
         return SourceProvider.of(source);
@@ -105,6 +125,11 @@ public class GaussDBCDCTableSource implements ScanTableSource {
                 slotName,
                 snapshotMode,
                 pollIntervalMs,
+                walMode,
+                decodePlugin,
+                parallelDecodeNum,
+                decodeStyle,
+                sendingBatch,
                 physicalRowDataType);
     }
 

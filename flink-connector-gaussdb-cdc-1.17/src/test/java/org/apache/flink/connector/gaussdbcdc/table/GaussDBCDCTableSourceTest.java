@@ -70,6 +70,11 @@ class GaussDBCDCTableSourceTest {
                 "slot1",
                 true,
                 1000,
+                false,
+                "mppdb_decoding",
+                1,
+                "b",
+                false,
                 DataTypes.STRING());
     }
 }

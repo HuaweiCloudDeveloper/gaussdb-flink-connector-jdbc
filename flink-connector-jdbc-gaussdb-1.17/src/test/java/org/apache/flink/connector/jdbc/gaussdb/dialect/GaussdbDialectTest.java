@@ -69,23 +69,8 @@ class GaussdbDialectTest {
 
     @Test
     void testUpsertStatement() {
-        // Default: use PostgreSQL ON CONFLICT syntax
+        // GaussDB always uses ON DUPLICATE KEY UPDATE (does not support ON CONFLICT)
         GaussdbDialect dialect = new GaussdbDialect();
-        String[] fieldNames = {"id", "name", "age"};
-        String[] uniqueKeys = {"id"};
-        Optional<String> upsertSql =
-                dialect.getUpsertStatement("test_table", fieldNames, uniqueKeys);
-        assertThat(upsertSql).isPresent();
-        assertThat(upsertSql.get()).contains("ON CONFLICT");
-        assertThat(upsertSql.get()).contains("DO UPDATE SET");
-        assertThat(upsertSql.get()).contains("name=EXCLUDED.name");
-        assertThat(upsertSql.get()).contains("age=EXCLUDED.age");
-    }
-
-    @Test
-    void testUpsertStatementWithMysqlMode() {
-        // MySQL compatible mode: use ON DUPLICATE KEY UPDATE
-        GaussdbDialect dialect = new GaussdbDialect(true);
         String[] fieldNames = {"id", "name", "age"};
         String[] uniqueKeys = {"id"};
         Optional<String> upsertSql =
@@ -94,6 +79,22 @@ class GaussdbDialectTest {
         assertThat(upsertSql.get()).contains("ON DUPLICATE KEY UPDATE");
         assertThat(upsertSql.get()).contains("name=VALUES(name)");
         assertThat(upsertSql.get()).contains("age=VALUES(age)");
+    }
+
+    @Test
+    void testUpsertStatementAlwaysOnDuplicateKey() {
+        // GaussDB always uses ON DUPLICATE KEY UPDATE regardless of mode
+        GaussdbDialect dialect = new GaussdbDialect();
+        String[] fieldNames = {"id", "name", "age"};
+        String[] uniqueKeys = {"id"};
+        Optional<String> upsertSql =
+                dialect.getUpsertStatement("test_table", fieldNames, uniqueKeys);
+        assertThat(upsertSql).isPresent();
+        assertThat(upsertSql.get()).contains("ON DUPLICATE KEY UPDATE");
+        assertThat(upsertSql.get()).contains("name=VALUES(name)");
+        assertThat(upsertSql.get()).contains("age=VALUES(age)");
+        // GaussDB does NOT support ON CONFLICT
+        assertThat(upsertSql.get()).doesNotContain("ON CONFLICT");
     }
 
     @Test
@@ -160,21 +161,20 @@ class GaussdbDialectTest {
 
     @Test
     void testUpsertStatementWithMultipleUniqueKeys() {
-        // Default: use PostgreSQL ON CONFLICT syntax
+        // GaussDB always uses ON DUPLICATE KEY UPDATE
         GaussdbDialect dialect = new GaussdbDialect();
         String[] fieldNames = {"id", "user_id", "name", "age"};
         String[] uniqueKeys = {"id", "user_id"};
         Optional<String> upsertSql =
                 dialect.getUpsertStatement("test_table", fieldNames, uniqueKeys);
         assertThat(upsertSql).isPresent();
-        assertThat(upsertSql.get()).contains("ON CONFLICT (id, user_id)");
-        assertThat(upsertSql.get()).contains("DO UPDATE SET");
+        assertThat(upsertSql.get()).contains("ON DUPLICATE KEY UPDATE");
         // Unique keys should not be in UPDATE clause
-        assertThat(upsertSql.get()).doesNotContain("id=EXCLUDED.id");
-        assertThat(upsertSql.get()).doesNotContain("user_id=EXCLUDED.user_id");
+        assertThat(upsertSql.get()).doesNotContain("id=VALUES(id)");
+        assertThat(upsertSql.get()).doesNotContain("user_id=VALUES(user_id)");
         // Non-unique fields should be in UPDATE clause
-        assertThat(upsertSql.get()).contains("name=EXCLUDED.name");
-        assertThat(upsertSql.get()).contains("age=EXCLUDED.age");
+        assertThat(upsertSql.get()).contains("name=VALUES(name)");
+        assertThat(upsertSql.get()).contains("age=VALUES(age)");
     }
 
     @Test

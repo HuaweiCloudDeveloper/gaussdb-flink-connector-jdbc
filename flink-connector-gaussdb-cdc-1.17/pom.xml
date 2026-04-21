@@ -16,7 +16,7 @@
 
     <properties>
         <flink.version>1.17.2</flink.version>
-        <gaussdb.jdbc.version>506.0.0.b058</gaussdb.jdbc.version>
+        <gaussdb.jdbc.version>506.0.0.b058-jdk7</gaussdb.jdbc.version>
         <postgres.replication.version>42.6.0</postgres.replication.version>
         <maven.compiler.source>11</maven.compiler.source>
         <maven.compiler.target>11</maven.compiler.target>
@@ -46,12 +46,11 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- GaussDB JDBC Driver -->
+        <!-- GaussDB JDBC Driver (packaged into connector jar) -->
         <dependency>
             <groupId>com.huaweicloud.gaussdb</groupId>
             <artifactId>gaussdbjdbc</artifactId>
             <version>${gaussdb.jdbc.version}</version>
-            <scope>provided</scope>
         </dependency>
 
         <!-- PostgreSQL Replication Connection (for CDC) -->

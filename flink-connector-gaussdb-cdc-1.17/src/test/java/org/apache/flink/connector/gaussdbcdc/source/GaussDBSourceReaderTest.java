@@ -20,6 +20,8 @@ package org.apache.flink.connector.gaussdbcdc.source;
 
 import org.apache.flink.api.connector.source.ReaderOutput;
 import org.apache.flink.api.connector.source.SourceReaderContext;
+import org.apache.flink.connector.gaussdbcdc.source.wal.WalChange;
+import org.apache.flink.connector.gaussdbcdc.source.wal.WalReplicationStream;
 import org.apache.flink.core.io.InputStatus;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
@@ -72,7 +74,12 @@ class GaussDBSourceReaderTest {
                         "pass",
                         "slot1",
                         "pgoutput",
-                        1000);
+                        1000,
+                        false,
+                        "mppdb_decoding",
+                        1,
+                        "b",
+                        false);
     }
 
     @Test
@@ -630,5 +637,210 @@ class GaussDBSourceReaderTest {
         java.lang.reflect.Field field = obj.getClass().getDeclaredField(fieldName);
         field.setAccessible(true);
         return (T) field.get(obj);
+    }
+
+    // ---- WAL mode tests ----
+
+    @Test
+    void testConvertWalColumnsToRowData() throws Exception {
+        // Create a WAL mode reader
+        GaussDBSourceReader walReader =
+                new GaussDBSourceReader(
+                        context,
+                        "localhost",
+                        5432,
+                        "testdb",
+                        "public",
+                        "test_table",
+                        "user",
+                        "pass",
+                        "slot1",
+                        "mppdb_decoding",
+                        1000,
+                        true,
+                        "mppdb_decoding",
+                        4,
+                        "b",
+                        false);
+
+        // Test convertWalColumnsToRowData via reflection
+        java.lang.reflect.Method method =
+                GaussDBSourceReader.class.getDeclaredMethod(
+                        "convertWalColumnsToRowData", List.class);
+        method.setAccessible(true);
+
+        // Create column values
+        List<WalChange.ColumnValue> columns =
+                new ArrayList<>(
+                        java.util.Arrays.asList(
+                                new WalChange.ColumnValue("id", 23, "1", false),
+                                new WalChange.ColumnValue("name", 1043, "Alice", false),
+                                new WalChange.ColumnValue("age", 23, "25", false),
+                                new WalChange.ColumnValue("salary", 701, "5000.50", false),
+                                new WalChange.ColumnValue("active", 16, "true", false),
+                                new WalChange.ColumnValue("score", 700, "95.5", false),
+                                new WalChange.ColumnValue("data", 25, "hello", false),
+                                new WalChange.ColumnValue("ts", 1114, "2024-01-15 10:30:00", false),
+                                new WalChange.ColumnValue("dt", 1082, "2024-01-15", false),
+                                new WalChange.ColumnValue("big_id", 20, "123456789", false),
+                                new WalChange.ColumnValue("amount", 1700, "99.99", false),
+                                new WalChange.ColumnValue("code", 21, "5", false)));
+
+        RowData row = (RowData) method.invoke(walReader, columns);
+        assertThat(row).isNotNull();
+        assertThat(row instanceof GenericRowData).isTrue();
+    }
+
+    @Test
+    void testConvertWalColumnsToRowDataNull() throws Exception {
+        GaussDBSourceReader walReader =
+                new GaussDBSourceReader(
+                        context,
+                        "localhost",
+                        5432,
+                        "testdb",
+                        "public",
+                        "test_table",
+                        "user",
+                        "pass",
+                        "slot1",
+                        "mppdb_decoding",
+                        1000,
+                        true,
+                        "mppdb_decoding",
+                        4,
+                        "b",
+                        false);
+
+        java.lang.reflect.Method method =
+                GaussDBSourceReader.class.getDeclaredMethod(
+                        "convertWalColumnsToRowData", List.class);
+        method.setAccessible(true);
+
+        // Test null columns
+        RowData row = (RowData) method.invoke(walReader, (List<?>) null);
+        assertThat(row).isNull();
+
+        // Test empty columns
+        row = (RowData) method.invoke(walReader, java.util.Collections.emptyList());
+        assertThat(row).isNull();
+
+        // Test column with null value
+        List<WalChange.ColumnValue> columns =
+                new ArrayList<>(
+                        java.util.Arrays.asList(
+                                new WalChange.ColumnValue("id", 23, null, true),
+                                new WalChange.ColumnValue("name", 1043, "test", false)));
+        row = (RowData) method.invoke(walReader, columns);
+        assertThat(row).isNotNull();
+    }
+
+    @Test
+    void testConvertColumnValueByOid() throws Exception {
+        GaussDBSourceReader walReader =
+                new GaussDBSourceReader(
+                        context,
+                        "localhost",
+                        5432,
+                        "testdb",
+                        "public",
+                        "test_table",
+                        "user",
+                        "pass",
+                        "slot1",
+                        "mppdb_decoding",
+                        1000,
+                        true,
+                        "mppdb_decoding",
+                        4,
+                        "b",
+                        false);
+
+        java.lang.reflect.Method method =
+                GaussDBSourceReader.class.getDeclaredMethod(
+                        "convertColumnValueByOid", int.class, String.class);
+        method.setAccessible(true);
+
+        // int4 (23)
+        assertThat(method.invoke(walReader, 23, "42")).isEqualTo(42);
+        // int8 (20)
+        assertThat(method.invoke(walReader, 20, "123456789012")).isEqualTo(123456789012L);
+        // int2 (21)
+        assertThat(method.invoke(walReader, 21, "5")).isEqualTo(5);
+        // bool (16)
+        assertThat(method.invoke(walReader, 16, "true")).isEqualTo(true);
+        // float4 (700)
+        assertThat(method.invoke(walReader, 700, "3.14")).isEqualTo(3.14f);
+        // float8 (701)
+        assertThat(method.invoke(walReader, 701, "3.14159")).isEqualTo(3.14159);
+        // varchar (1043)
+        assertThat(method.invoke(walReader, 1043, "hello"))
+                .isEqualTo(StringData.fromString("hello"));
+        // text (25)
+        assertThat(method.invoke(walReader, 25, "world")).isEqualTo(StringData.fromString("world"));
+        // name (19)
+        assertThat(method.invoke(walReader, 19, "col1")).isEqualTo(StringData.fromString("col1"));
+        // null value
+        assertThat(method.invoke(walReader, 23, null)).isNull();
+        // unknown OID -> fallback to string
+        assertThat(method.invoke(walReader, 9999, "unknown"))
+                .isEqualTo(StringData.fromString("unknown"));
+    }
+
+    @Test
+    void testWalModeConstructor() {
+        GaussDBSourceReader walReader =
+                new GaussDBSourceReader(
+                        context,
+                        "localhost",
+                        5432,
+                        "testdb",
+                        "public",
+                        "test_table",
+                        "user",
+                        "pass",
+                        "slot1",
+                        "mppdb_decoding",
+                        1000,
+                        true,
+                        "mppdb_decoding",
+                        4,
+                        "b",
+                        true);
+        assertThat(walReader).isNotNull();
+    }
+
+    @Test
+    void testCloseWithWalReplicationStream() throws Exception {
+        GaussDBSourceReader walReader =
+                new GaussDBSourceReader(
+                        context,
+                        "localhost",
+                        5432,
+                        "testdb",
+                        "public",
+                        "test_table",
+                        "user",
+                        "pass",
+                        "slot1",
+                        "mppdb_decoding",
+                        1000,
+                        true,
+                        "mppdb_decoding",
+                        4,
+                        "b",
+                        false);
+
+        // Set a mock WalReplicationStream
+        Connection conn = mock(Connection.class);
+        setField(walReader, "connection", conn);
+        when(conn.isClosed()).thenReturn(false);
+
+        WalReplicationStream mockStream = mock(WalReplicationStream.class);
+        setField(walReader, "walReplicationStream", mockStream);
+
+        walReader.close();
+        org.mockito.Mockito.verify(mockStream).close();
+        org.mockito.Mockito.verify(conn).close();
     }
 }

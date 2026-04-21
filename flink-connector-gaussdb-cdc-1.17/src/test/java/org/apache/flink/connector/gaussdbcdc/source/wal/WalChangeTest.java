@@ -20,8 +20,8 @@ package org.apache.flink.connector.gaussdbcdc.source.wal;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -32,8 +32,8 @@ class WalChangeTest {
     void testDefaultConstructor() {
         WalChange change = new WalChange();
         assertThat(change).isNotNull();
-        assertThat(change.getBefore()).isNotNull();
-        assertThat(change.getAfter()).isNotNull();
+        assertThat(change.getBeforeColumns()).isNotNull();
+        assertThat(change.getAfterColumns()).isNotNull();
     }
 
     @Test
@@ -72,27 +72,27 @@ class WalChangeTest {
     }
 
     @Test
-    void testSetAndGetBefore() {
+    void testSetAndGetBeforeColumns() {
         WalChange change = new WalChange();
-        Map<String, Object> before = new HashMap<>();
-        before.put("id", 1);
-        before.put("name", "old_name");
-        change.setBefore(before);
+        List<WalChange.ColumnValue> before = new ArrayList<>();
+        before.add(new WalChange.ColumnValue("id", 23, "1", false));
+        before.add(new WalChange.ColumnValue("name", 1043, "old_name", false));
+        change.setBeforeColumns(before);
 
-        assertThat(change.getBefore()).hasSize(2);
-        assertThat(change.getBefore().get("id")).isEqualTo(1);
+        assertThat(change.getBeforeColumns()).hasSize(2);
+        assertThat(change.getBeforeColumns().get(0).getValue()).isEqualTo("1");
     }
 
     @Test
-    void testSetAndGetAfter() {
+    void testSetAndGetAfterColumns() {
         WalChange change = new WalChange();
-        Map<String, Object> after = new HashMap<>();
-        after.put("id", 1);
-        after.put("name", "new_name");
-        change.setAfter(after);
+        List<WalChange.ColumnValue> after = new ArrayList<>();
+        after.add(new WalChange.ColumnValue("id", 23, "1", false));
+        after.add(new WalChange.ColumnValue("name", 1043, "new_name", false));
+        change.setAfterColumns(after);
 
-        assertThat(change.getAfter()).hasSize(2);
-        assertThat(change.getAfter().get("name")).isEqualTo("new_name");
+        assertThat(change.getAfterColumns()).hasSize(2);
+        assertThat(change.getAfterColumns().get(1).getValue()).isEqualTo("new_name");
     }
 
     @Test

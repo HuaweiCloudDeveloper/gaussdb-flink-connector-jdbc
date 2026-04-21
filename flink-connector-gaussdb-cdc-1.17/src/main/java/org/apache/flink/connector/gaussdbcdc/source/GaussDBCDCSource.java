@@ -75,6 +75,11 @@ public class GaussDBCDCSource
     private final int chunkSize;
     private final int connectTimeoutMs;
     private final int pollIntervalMs;
+    private final boolean walMode;
+    private final String decodePlugin;
+    private final int parallelDecodeNum;
+    private final String decodeStyle;
+    private final boolean sendingBatch;
 
     private GaussDBCDCSource(Builder builder) {
         this.hostname = Preconditions.checkNotNull(builder.hostname, "hostname must not be null");
@@ -91,6 +96,11 @@ public class GaussDBCDCSource
         this.chunkSize = builder.chunkSize;
         this.connectTimeoutMs = builder.connectTimeoutMs;
         this.pollIntervalMs = builder.pollIntervalMs;
+        this.walMode = builder.walMode;
+        this.decodePlugin = builder.decodePlugin;
+        this.parallelDecodeNum = builder.parallelDecodeNum;
+        this.decodeStyle = builder.decodeStyle;
+        this.sendingBatch = builder.sendingBatch;
     }
 
     @Override
@@ -112,7 +122,12 @@ public class GaussDBCDCSource
                 password,
                 slotName,
                 pluginName,
-                pollIntervalMs);
+                pollIntervalMs,
+                walMode,
+                decodePlugin,
+                parallelDecodeNum,
+                decodeStyle,
+                sendingBatch);
     }
 
     @Override
@@ -185,6 +200,11 @@ public class GaussDBCDCSource
         private int chunkSize = GaussDBCDCOptions.CHUNK_SIZE.defaultValue();
         private int connectTimeoutMs = GaussDBCDCOptions.CONNECT_TIMEOUT_MS.defaultValue();
         private int pollIntervalMs = GaussDBCDCOptions.POLL_INTERVAL_MS.defaultValue();
+        private boolean walMode = GaussDBCDCOptions.WAL_MODE.defaultValue();
+        private String decodePlugin = GaussDBCDCOptions.DECODE_PLUGIN.defaultValue();
+        private int parallelDecodeNum = GaussDBCDCOptions.PARALLEL_DECODE_NUM.defaultValue();
+        private String decodeStyle = GaussDBCDCOptions.DECODE_STYLE.defaultValue();
+        private boolean sendingBatch = GaussDBCDCOptions.SENDING_BATCH.defaultValue();
 
         public Builder hostname(String hostname) {
             this.hostname = hostname;
@@ -248,6 +268,31 @@ public class GaussDBCDCSource
 
         public Builder pollIntervalMs(int pollIntervalMs) {
             this.pollIntervalMs = pollIntervalMs;
+            return this;
+        }
+
+        public Builder walMode(boolean walMode) {
+            this.walMode = walMode;
+            return this;
+        }
+
+        public Builder decodePlugin(String decodePlugin) {
+            this.decodePlugin = decodePlugin;
+            return this;
+        }
+
+        public Builder parallelDecodeNum(int parallelDecodeNum) {
+            this.parallelDecodeNum = parallelDecodeNum;
+            return this;
+        }
+
+        public Builder decodeStyle(String decodeStyle) {
+            this.decodeStyle = decodeStyle;
+            return this;
+        }
+
+        public Builder sendingBatch(boolean sendingBatch) {
+            this.sendingBatch = sendingBatch;
             return this;
         }
 

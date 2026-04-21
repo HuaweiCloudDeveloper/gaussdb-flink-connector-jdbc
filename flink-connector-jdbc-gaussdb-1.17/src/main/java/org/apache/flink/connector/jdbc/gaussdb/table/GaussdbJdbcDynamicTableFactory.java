@@ -125,7 +125,7 @@ public class GaussdbJdbcDynamicTableFactory
                         .setClassLoader(classLoader)
                         .setDBUrl(url)
                         .setTableName(readableConfig.get(TABLE_NAME))
-                        .setDialect(new GaussdbDialect(url.contains("compatibleMode=mysql")))
+                        .setDialect(new GaussdbDialect())
                         .setParallelism(readableConfig.getOptional(SINK_PARALLELISM).orElse(null))
                         .setConnectionCheckTimeoutSeconds(
                                 (int) readableConfig.get(MAX_RETRY_TIMEOUT).getSeconds());

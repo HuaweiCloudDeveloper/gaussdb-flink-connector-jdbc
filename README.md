@@ -65,17 +65,17 @@
 - **JDK**: 8/11/17
 
 ### 依赖 JAR 包
-将以下 JAR 包放置到 Flink 安装目录的 `lib/` 文件夹下：
 
-1. **GaussDB JDBC 驱动** (必选)
-   - JDK 8/11: `gaussdbjdbc-506.0.0.b058-jdk7.jar`
-   - JDK 17+: `gaussdbjdbc-506.0.0.b058.jar`
+GaussDB Connector 已内置 GaussDB JDBC 驱动，部署时只需以下 JAR 包：
 
-2. **Flink JDBC Connector** (必选)
+1. **Flink JDBC Connector** (必选)
    - Flink 1.17: `flink-connector-jdbc-3.1.2-1.17.jar`
 
-3. **GaussDB Connector** (必选)
+2. **GaussDB Connector** (必选，已包含 GaussDB JDBC 驱动)
    - `flink-connector-jdbc-gaussdb-1.17-4.0-SNAPSHOT.jar`
+   - `flink-connector-gaussdb-cdc-1.17-4.0-SNAPSHOT.jar`（CDC 模式）
+
+> **说明**：Connector jar 已通过 maven-shade-plugin 内置 `gaussdbjdbc-506.0.0.b058-jdk7`（兼容 JDK 8/11），无需单独部署 GaussDB JDBC 驱动。
 
 ### Maven 依赖
 
