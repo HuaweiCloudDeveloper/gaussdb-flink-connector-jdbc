@@ -113,7 +113,7 @@ class WalReplicationStreamTest {
         stream.initialize();
 
         assertThat(stream.isRunning()).isTrue();
-        assertThat(stream.getLastLsn()).isEqualTo("0/1A2B3C");
+        assertThat(stream.getLastLsn()).isEqualTo("0/0");
     }
 
     @Test
@@ -190,7 +190,7 @@ class WalReplicationStreamTest {
         when(lsnStmt.executeQuery()).thenReturn(lsnRs);
         when(connection.prepareStatement("SELECT pg_current_xlog_location()")).thenReturn(lsnStmt);
 
-        // Mock readChanges - peek_changes with non-null lastLsn
+        // Mock readChanges - peek_changes with NULL lastLsn (initial position)
         PreparedStatement readStmt = mock(PreparedStatement.class);
         ResultSet readRs = mock(ResultSet.class);
         when(readRs.next()).thenReturn(true, true, false);
@@ -199,9 +199,9 @@ class WalReplicationStreamTest {
         when(readRs.getString("data"))
                 .thenReturn("BEGIN 100", "table public.test: INSERT: id[integer]:1");
         when(readStmt.executeQuery()).thenReturn(readRs);
-        // lastLsn will be "0/1" so the SQL will use peek_changes with 3 params
+        // lastLsn will be "0/0" so the SQL will use peek_changes with NULL start
         when(connection.prepareStatement(
-                        "SELECT location AS lsn, xid, data FROM pg_logical_slot_peek_changes(?, ?, ?, 'include-xids', '1')"))
+                        "SELECT location AS lsn, xid, data FROM pg_logical_slot_peek_changes(?, NULL, ?, 'include-xids', '1')"))
                 .thenReturn(readStmt);
 
         // Mock advanceSlot - GaussDB uses pg_replication_slot_advance
@@ -261,7 +261,7 @@ class WalReplicationStreamTest {
                                 + "\"old_keys_name\":[],\"old_keys_type\":[],\"old_keys_val\":[]}");
         when(readStmt.executeQuery()).thenReturn(readRs);
         when(connection.prepareStatement(
-                        "SELECT location AS lsn, xid, data FROM pg_logical_slot_peek_changes(?, ?, ?, 'include-xids', '1', 'parallel-decode-num', '4')"))
+                        "SELECT location AS lsn, xid, data FROM pg_logical_slot_peek_changes(?, NULL, ?, 'include-xids', '1', 'parallel-decode-num', '4')"))
                 .thenReturn(readStmt);
 
         PreparedStatement advanceStmt = mock(PreparedStatement.class);

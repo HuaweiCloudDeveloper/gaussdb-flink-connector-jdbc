@@ -89,6 +89,9 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
     // WAL replication stream for WAL-based CDC
     private WalReplicationStream walReplicationStream;
 
+    // Whether the WAL stream has been initialized
+    private boolean walStreamInitialized = false;
+
     public GaussDBSourceReader(
             SourceReaderContext context,
             String hostname,
@@ -280,6 +283,16 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
 
     /** Poll changes from WAL logical decoding stream. */
     private InputStatus pollChangesFromWal(ReaderOutput<RowData> output) throws Exception {
+        // Lazy initialize the WAL stream on first poll after snapshot completion
+        if (!walStreamInitialized) {
+            LOG.info("Initializing WAL replication stream for incremental phase");
+            walReplicationStream.initialize();
+            walStreamInitialized = true;
+            LOG.info(
+                    "WAL stream initialized, starting from LSN: {}",
+                    walReplicationStream.getLastLsn());
+        }
+
         List<WalChange> changes = walReplicationStream.readChanges(1000);
 
         for (WalChange change : changes) {

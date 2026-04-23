@@ -127,9 +127,13 @@ public class WalReplicationStream {
             createSlot();
         }
 
-        // Get current LSN position
-        lastLsn = getCurrentLsn();
-        LOG.info("Starting from LSN: {}", lastLsn);
+        // For SQL function mode: start from the slot's creation LSN (0/0 = from
+        // beginning of slot) rather than the current LSN. Starting from current LSN
+        // would skip all changes that occurred between slot creation and now.
+        // For streaming replication API: the stream starts from the slot position
+        // automatically, so lastLsn is only used for SQL function fallback.
+        lastLsn = "0/0";
+        LOG.info("Starting from LSN: {} (slot position)", lastLsn);
 
         // Try JDBC replication API first
         try {
@@ -362,23 +366,18 @@ public class WalReplicationStream {
             // For SQL function mode, parallel-decode-num alone controls parallelism.
         }
 
-        String sql;
-        if (lastLsn == null || "0/0".equals(lastLsn)) {
-            sql =
-                    String.format(
-                            "SELECT location AS lsn, xid, data FROM pg_logical_slot_peek_changes(?, NULL, ?, %s)",
-                            optionBuilder);
-        } else {
-            sql =
-                    String.format(
-                            "SELECT location AS lsn, xid, data FROM pg_logical_slot_peek_changes(?, ?, ?, %s)",
-                            optionBuilder);
-        }
+        // Always pass NULL as the start LSN to pg_logical_slot_peek_changes.
+        // GaussDB peek_changes returns empty when a specific LSN is passed after
+        // pg_replication_slot_advance(). We rely on advanceSlot() to track progress
+        // and always read from the slot's current position.
+        String sql =
+                String.format(
+                        "SELECT location AS lsn, xid, data FROM pg_logical_slot_peek_changes(?, NULL, ?, %s)",
+                        optionBuilder);
 
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             stmt.setString(1, slotName);
-            stmt.setString(2, "0/0".equals(lastLsn) ? null : lastLsn);
-            stmt.setInt(3, maxChanges);
+            stmt.setInt(2, maxChanges);
 
             try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {

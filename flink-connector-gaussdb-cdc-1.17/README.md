@@ -19,32 +19,33 @@
 
 ## 项目介绍
 
-Flink GaussDB CDC Connector 1.17 是专为 Apache Flink 1.17 版本设计的 GaussDB 变更数据捕获（CDC）连接器，支持实时捕获 GaussDB 数据库的 INSERT、UPDATE、DELETE 操作。
+Flink GaussDB CDC Connector 1.17 是专为 Apache Flink 1.17 版本设计的 GaussDB 变更数据捕获（CDC）连接器，基于 mppdb_decoding 插件解码 WAL 日志，支持实时捕获 GaussDB 数据库的 INSERT、UPDATE、DELETE 操作。
 
 ## 核心特性
 
 ### 1. 变更数据捕获
 - **INSERT**: 实时捕获新插入的数据
-- **UPDATE**: 实时捕获更新的数据（需 `updated_at` 字段）
-- **DELETE**: 实时捕获删除的数据（通过快照对比）
+- **UPDATE**: 实时捕获更新的数据
+- **DELETE**: 实时捕获删除的数据
 
-### 2. 两种 CDC 模式
+### 2. WAL 逻辑解码
 
-| 模式 | 实现方式 | 延迟 | 数据库要求 |
-|------|---------|------|------------|
-| **轮询式 (Polling)** | 定时查询数据库 | 秒级 | 无特殊要求 |
-| **WAL 式 (Streaming)** | 监听 WAL 日志 + 并行解码 | 毫秒级 | wal_level=logical |
+基于 GaussDB `mppdb_decoding` 插件解码 WAL 日志，毫秒级延迟，要求 `wal_level=logical`。
 
-### 3. 并行解码
+全量快照（SELECT）→ 增量流式（WAL 解码）两阶段自动衔接。
 
-WAL 模式支持 GaussDB mppdb_decoding 并行逻辑解码，可显著提升解码吞吐量：
+### 3. WAL 增量模式双通道
 
-| 特性 | 说明 |
-|------|------|
-| **并行解码线程** | 支持 1~20 个并行解码线程（parallel-decode-num） |
-| **输出格式** | 支持 binary(b)、json(j)、text(t) 三种格式 |
-| **批量发送** | 支持批量发送模式，累积到 1MB 后发送（sending-batch） |
-| **兼容模式** | 自动适配 GaussDB / PostgreSQL API 差异 |
+WAL 增量阶段支持两种数据通道，Connector 自动选择最优路径：
+
+| 通道 | 实现方式 | 并行解码性能 | 输出格式 | 环境要求 |
+|------|---------|------------|---------|--------|
+| **SQL 函数模式**（默认） | pg_logical_slot_peek_changes | ⭐ 仅 parallel-decode-num（实际无提升） | 固定 JSON | wal_level=logical + 复制槽 |
+| **流式复制 API** | JDBC 复制流 | ⭐⭐⭐ 全参数生效 | binary/json/text | 额外需 gs_hba.conf 白名单 + enable_thread_pool=off 或 HA 端口 |
+
+> **说明**：
+> - **SQL 函数模式**：通过 `pg_logical_slot_peek_changes` SQL 查询获取 WAL 变更，无需额外数据库配置，兼容性最好。但 `decode-style` 和 `sending-batch` 不被支持，并行解码无实际性能提升（82% 耗时在 JSON 文本传输）
+> - **流式复制 API**：通过 JDBC `replication=database` 连接，支持 `decode-style=b`（二进制格式）和 `sending-batch=1`（批量发送），并行解码性能最优，但需要额外配置 gs_hba.conf 白名单
 
 ### 3. 与 JDBC Connector 对比
 
@@ -67,35 +68,35 @@ WAL 模式支持 GaussDB mppdb_decoding 并行逻辑解码，可显著提升解�
 - **CPU**: 2GHz 或更高
 - **RAM**: 4GB 或更大
 - **Disk**: 至少 40GB
-- **JDK**: 8/11（默认，使用内置 jdk7 兼容版驱动）/ 17+（如需流式复制 API）
+- **JDK**: 8/11（推荐）/ 17+
 
-> **说明**：Connector 内置的 GaussDB JDBC 驱动（`gaussdbjdbc-506.0.0.b058-jdk7`）兼容 JDK 8/11，可直接使用。如需使用 GaussDB 流式复制 API（更低延迟），需 JDK 17+ 并替换为 `gaussdbjdbc-506.0.0.b058.jar`。
+> **说明**：Connector 内置的 GaussDB JDBC 驱动（`gaussdbjdbc-506.0.0.b058-jdk7`）兼容 JDK 8/11，流式复制 API 同样可用（PGReplicationStream 编译版本为 JDK 8）。
 
 ### 数据库要求
 
-#### 轮询式 CDC（默认）
-- 无特殊要求
-- 需要表有主键
-- UPDATE 检测需要 `updated_at` 时间戳字段
-
-#### WAL 式 CDC（推荐）
+#### WAL 逻辑解码（默认）
 
 **配置 wal_level 为 logical**：
 
-方式一：通过 Console 控制台（推荐）
+通过 Console 控制台（推荐）
 1. 登录 GaussDB Console 控制台
 2. 进入「参数管理」→「高危参数」
 3. 找到 `wal_level` 参数，修改为 `logical`
 4. 重启 GaussDB 实例生效
 
-方式二：命令行（需要运维权限）
-```bash
-# 在 GaussDB 节点执行
-gs_guc reload -Z datanode -N all -I all -c "wal_level=logical"
 
-# 重启 GaussDB 生效
-gs_om -t restart
-```
+**流式复制 API 额外配置**（如需并行解码最佳性能）：
+
+GaussDB 的流式复制连接（`replication=database`）需要额外的访问控制配置：
+
+1. **gs_hba.conf 白名单**：需添加 replication 类型的访问规则
+   ```
+   # 在 gs_hba.conf 中添加（需运维操作，不支持 SQL 修改）
+   host    replication    root    <客户端IP>/32    md5
+   ```
+2. **enable_thread_pool**：当 `enable_thread_pool=on`（集中式默认）时，复制连接需走 HA 端口（数据端口+1，如 8001）。如需走数据端口 8000，需关闭该参数（需重启实例）
+
+> **说明**：如无法完成以上配置，Connector 会自动回退到 SQL 函数模式，功能完整但并行解码性能受限。
 
 配置完成后，创建复制槽：
 ```sql
@@ -119,10 +120,8 @@ GaussDB CDC Connector 已内置 GaussDB JDBC 驱动和 PostgreSQL JDBC 驱动，
    - `flink-connector-gaussdb-cdc-1.17-4.0-SNAPSHOT.jar`
 
 > **说明**：Connector jar 已通过 maven-shade-plugin 内置以下依赖，无需单独部署：
-> - `gaussdbjdbc-506.0.0.b058-jdk7.jar`（GaussDB JDBC 驱动，兼容 JDK 8/11）
+> - `gaussdbjdbc-506.0.0.b058-jdk7.jar`（GaussDB JDBC 驱动，兼容 JDK 8/11，支持流式复制 API）
 > - `postgresql-42.6.0.jar`（PostgreSQL JDBC 驱动，WAL 模式使用）
->
-> 如果需要使用流式复制 API（需 JDK 17+），可将 Flink lib 目录下的内置驱动替换为 `gaussdbjdbc-506.0.0.b058.jar`（JDK 17 版本）。
 
 ### Maven 依赖
 
@@ -155,40 +154,11 @@ $FLINK_HOME/bin/start-cluster.sh
 
 ### 2. SQL 方式使用 CDC Connector
 
-#### 轮询式 CDC（默认）
+#### SQL 函数模式（默认，零额外配置）
 
-```sql
--- 创建 GaussDB CDC 源表（默认轮询模式）
-CREATE TABLE student_cdc (
-    id INT,
-    name STRING,
-    gender STRING,
-    age INT,
-    updated_at TIMESTAMP(3),
-    PRIMARY KEY (id) NOT ENFORCED
-) WITH (
-    'connector' = 'gaussdb-cdc',
-    'hostname' = 'localhost',
-    'port' = '8000',
-    'database' = 'test',
-    'schema' = 'public',
-    'table-name' = 'student',
-    'username' = 'root',
-    'password' = 'password',
-    'slot.name' = 'flink_cdc_slot',
-    'snapshot.mode' = 'true',
-    'poll.interval.ms' = '1000'
-);
+无需 gs_hba.conf 白名单、无需 HA 端口，只需 `wal_level=logical` 和复制槽即可使用。
 
--- 查询 CDC 数据
-SELECT * FROM student_cdc;
-```
-
-#### WAL 式 CDC + 并行解码（推荐）
-
-**启用并行解码的完整步骤**：
-
-**1. 配置 GaussDB 数据库**（需要运维权限）
+**1. 配置 GaussDB 数据库**
 
 ```sql
 -- 1. 确认用户有复制权限
@@ -205,7 +175,37 @@ SELECT pg_create_logical_replication_slot('flink_cdc_slot', 'mppdb_decoding');
 **2. 在 Flink SQL 中配置 CDC 源表**
 
 ```sql
--- 创建 WAL 模式 CDC 源表（推荐，毫秒级延迟）
+-- SQL 函数模式（默认）
+CREATE TABLE student_cdc (
+    id INT,
+    name STRING,
+    age INT,
+    PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+    'connector' = 'gaussdb-cdc',
+    'hostname' = 'localhost',
+    'port' = '8000',
+    'database' = 'test',
+    'schema' = 'public',
+    'table-name' = 'student',
+    'username' = 'root',
+    'password' = 'password',
+
+    -- ★ WAL 模式开关
+    'wal.mode' = 'true',
+    'decode.plugin' = 'mppdb_decoding',
+    'slot.name' = 'flink_cdc_slot'
+);
+```
+
+> **注意**：SQL 函数模式下 `parallel-decode-num`、`decode-style`、`sending-batch` 参数均无效。`decode-style` 和 `sending-batch` 会报 `Option unknown` 错误，Connector 会自动跳过。`parallel-decode-num` 可传入但无性能提升（82% 耗时在 JSON 文本传输）。
+
+#### 流式复制 API 模式（并行解码性能最优）
+
+需额外配置 gs_hba.conf 白名单和 enable_thread_pool（见[前置条件](#前置条件)）。
+
+```sql
+-- 流式复制 API 模式
 CREATE TABLE student_cdc_wal (
     id INT,
     name STRING,
@@ -221,37 +221,38 @@ CREATE TABLE student_cdc_wal (
     'username' = 'root',
     'password' = 'password',
 
-    -- ★ WAL 模式开关（必须）
+    -- ★ WAL 模式开关
     'wal.mode' = 'true',
 
-    -- ★ 并行解码配置（推荐）
-    'parallel-decode-num' = '4',     -- 并行解码线程数，1=串行，2~20=并行，推荐 4
+    -- ★ 并行解码配置（流式复制 API 下生效）
+    'parallel-decode-num' = '4',     -- 并行解码线程数，推荐 4
     'decode.plugin' = 'mppdb_decoding',
     'slot.name' = 'flink_cdc_slot',
 
-    -- 以下参数仅 JDK 17+ 流式复制 API 模式生效，JDK 8/11 环境下自动忽略
+    -- 以下参数仅流式复制 API 模式生效
     'decode-style' = 'b',            -- binary 格式
     'sending-batch' = 'true'         -- 批量发送
 );
-
--- 查询 CDC 数据
-SELECT * FROM student_cdc_wal;
 ```
 
-**3. 并行解码配置速查**
+**并行解码配置速查**
 
-| 参数 | 串行解码（默认） | 并行解码（推荐） | 说明 |
-|------|----------------|----------------|------|
+| 参数 | SQL 函数模式 | 流式复制 API 模式 | 说明 |
+|------|------------|----------------|------|
 | `wal.mode` | `true` | `true` | 必须开启 |
-| `parallel-decode-num` | `1` | `4` | 并行线程数，2~20 为并行 |
-| `decode.plugin` | `mppdb_decoding` | `mppdb_decoding` | GaussDB 原生解码插件 |
-| `slot.name` | `flink_cdc_slot` | `flink_cdc_slot` | 与数据库中创建的复制槽对应 |
+| `parallel-decode-num` | 可传但无提升 | ✅ 生效 | 并行线程数，2~20 为并行 |
+| `decode-style` | ❌ 报错自动跳过 | ✅ 生效 | 输出格式：b=binary，j=json，t=text |
+| `sending-batch` | ❌ 报错自动跳过 | ✅ 生效 | 批量发送，累积 1MB |
+| `slot.name` | 必须与数据库复制槽对应 | 必须与数据库复制槽对应 | 复制槽名称 |
 
-> **说明**：
-> - `parallel-decode-num` 默认值为 1（串行解码），**需要显式设置 >1 才能启用并行解码**
-> - `decode-style` 和 `sending-batch` 仅在使用 GaussDB JDBC 流式复制 API（需 JDK 17+ 驱动）时生效
-> - 当前 Connector 内置的 `gaussdbjdbc-jdk7` 驱动不支持流式复制 API，WAL 模式自动回退到 SQL 函数模式，此时仅 `parallel-decode-num` 有效，输出为 JSON 格式
-> - 如需流式复制 API 全部功能（binary 格式、批量发送），需替换为 `gaussdbjdbc-506.0.0.b058.jar`（需 JDK 17+）
+> **性能对比（50万行 INSERT）**：
+>
+> | 模式 | parallel-decode-num | 吞吐量 |
+> |------|-------------------|--------|
+> | SQL 函数模式 | 1 | ~7900 rows/s |
+> | SQL 函数模式 | 4 | ~7500 rows/s |
+> | SQL 函数模式 | 8 | ~7400 rows/s |
+> | 流式复制 API + decode-style=b + sending-batch=1 | 4 | 预期显著提升（待验证） |
 
 ### 3. 实时捕获变更示例
 
@@ -269,7 +270,9 @@ CREATE TABLE student_cdc (
     'database' = 'test',
     'table-name' = 'student',
     'username' = 'root',
-    'password' = 'password'
+    'password' = 'password',
+    'wal.mode' = 'true',
+    'slot.name' = 'flink_cdc_slot'
 );
 
 -- 创建目标表
@@ -293,27 +296,8 @@ INSERT INTO student_target SELECT * FROM student_cdc;
 
 ## 使用说明
 
-### CDC 模式选择
-
-| 场景 | 推荐模式 | 说明 |
-|------|---------|------|
-| 云端 GaussDB | 轮询式 | 通常无 WAL 逻辑复制权限 |
-| 自建 GaussDB | WAL 式 | 实时性更好，资源消耗更低 |
-| 低频变更 | 轮询式 | 配置较大的 poll interval |
-| 高频变更 | WAL 式 | 毫秒级延迟 |
-
 ### 表结构要求
 
-#### 轮询式 CDC
-```sql
-CREATE TABLE student (
-    id INT PRIMARY KEY,           -- 必须：用于检测 INSERT/DELETE
-    name VARCHAR(100),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP  -- 推荐：用于检测 UPDATE
-);
-```
-
-#### WAL 式 CDC
 ```sql
 CREATE TABLE student (
     id INT PRIMARY KEY,
@@ -341,22 +325,23 @@ CREATE TABLE student (
 
 | 参数 | 必填 | 默认值 | 说明 |
 |-----|------|-------|------|
-| wal.mode | 否 | false | 是否启用 WAL 逻辑解码模式。false=轮询式，true=WAL 式 |
+| wal.mode | 否 | true | 是否启用 WAL 逻辑解码模式 |
 | decode.plugin | 否 | mppdb_decoding | 逻辑解码插件名称。支持：mppdb_decoding（默认）、pgoutput |
-| slot.name | 否 | flink_cdc_slot | 复制槽名称（WAL 模式） |
+| slot.name | 否 | flink_cdc_slot | 复制槽名称 |
 | snapshot.mode | 否 | true | 是否先读取全量快照 |
-| poll.interval.ms | 否 | 1000 | 轮询间隔（轮询式） |
 | chunk.size | 否 | 1000 | 分块大小 |
 
 ### 并行解码参数（WAL 模式）
 
-| 参数 | 必填 | 默认值 | 说明 |
-|-----|------|-------|------|
-| parallel-decode-num | 否 | 1 | 并行解码线程数，范围 1~20。1=串行解码，>1=并行解码 |
-| decode-style | 否 | b | 解码输出格式：`b`=binary（默认），`j`=json，`t`=text。仅流式复制 API 模式生效 |
-| sending-batch | 否 | false | 是否批量发送解码结果。true=累积到 1MB 后发送。仅流式复制 API 模式生效 |
+| 参数 | SQL 函数模式 | 流式复制 API 模式 | 默认值 | 说明 |
+|-----|------------|----------------|-------|------|
+| parallel-decode-num | 可传但无提升 | ✅ 生效 | 1 | 并行解码线程数，范围 1~20 |
+| decode-style | ❌ 报错自动跳过 | ✅ 生效 | b | 输出格式：`b`=binary，`j`=json，`t`=text |
+| sending-batch | ❌ 报错自动跳过 | ✅ 生效 | false | 批量发送，true=累积到 1MB 后发送 |
 
-> **注意**：`decode-style` 和 `sending-batch` 仅在使用 GaussDB JDBC 流式复制 API 时生效。当驱动不支持流式复制 API 而回退到 SQL 函数模式时，仅 `parallel-decode-num` 有效，输出格式为 JSON。
+> **重要**：SQL 函数模式下 `decode-style` 和 `sending-batch` 不被 mppdb_decoding 识别（会报 `Option unknown` 错误），Connector 会自动跳过。
+> `parallel-decode-num` 可传入但无性能提升（82% 耗时在 JSON 文本传输，解码仅占 18%）。
+> 并行解码性能提升需启用流式复制 API 模式（需配置 gs_hba.conf 白名单）。
 
 ### Source 专用参数
 
@@ -365,24 +350,9 @@ CREATE TABLE student (
 | scan.fetch-size | 否 | 0 | 每次读取行数 |
 | connect.timeout.ms | 否 | 30000 | 连接超时时间 |
 
-## CDC 实现原理
+### CDC 实现原理
 
-### 轮询式 CDC
-
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Flink     │────▶│   定时查询   │────▶│   GaussDB   │
-│   CDC Source│     │  (INSERT)   │     │   max(id)   │
-└─────────────┘     ├─────────────┤     └─────────────┘
-                    │  (UPDATE)   │
-                    │ updated_at  │
-                    ├─────────────┤
-                    │  (DELETE)   │
-                    │  快照对比   │
-                    └─────────────┘
-```
-
-### WAL 式 CDC
+### WAL 逻辑解码
 
 ```
 ┌─────────────┐     ┌──────────────────┐     ┌─────────────┐
@@ -399,7 +369,7 @@ CREATE TABLE student (
 └─────────────┘
 ```
 
-#### WAL 模式双通道架构
+#### WAL 增量双通道架构
 
 ```
                   ┌─────────────────────────┐
@@ -409,7 +379,7 @@ CREATE TABLE student (
               ┌────────────▼────────────┐
               │  尝试流式复制 API        │
               │  (PGReplicationStream)   │
-              │  需要 JDK 17+ JDBC 驱动  │
+              │  需要 gs_hba.conf 白名单  │
               └────────────┬────────────┘
                      成功   │     失败
               ┌────────────▼────────────┐
@@ -419,8 +389,11 @@ CREATE TABLE student (
               └─────────────────────────┘
 ```
 
-- **流式复制 API 模式**：通过 JDBC 流式复制连接，支持 binary/json/text 输出格式，支持 `decode-style` 和 `sending-batch` 参数，延迟最低
-- **SQL 函数模式**：通过 `pg_logical_slot_peek_changes` SQL 查询，仅支持 `parallel-decode-num` 参数，输出为 JSON 格式，兼容性最好
+- **流式复制 API 模式**：通过 JDBC `replication=database` 连接，支持 `decode-style`（binary/json/text）和 `sending-batch`（批量发送）参数，**并行解码性能最优**
+  - 需求：gs_hba.conf 添加 replication 白名单 + enable_thread_pool=off 或 HA 端口可达
+- **SQL 函数模式**：通过 `pg_logical_slot_peek_changes` SQL 查询，仅 `parallel-decode-num` 参数有效，输出固定为 JSON 格式
+  - 瓶颈：82% 耗时在 JSON 文本传输，并行解码无性能提升
+  - 优势：无需额外配置，兼容性最好
 
 ### WAL 数据格式示例
 
@@ -486,32 +459,32 @@ CREATE TABLE student (
    - GaussDB 必须设置 `wal_level = logical`
    - 用户必须有 `REPLICATION` 权限
    - 需要创建逻辑复制槽
-   - 流式复制 API 模式需要 JDK 17+ 环境
+   - 流式复制 API 模式需要 gs_hba.conf 配置 replication 白名单（不支持 SQL 修改，需运维操作）
 
 2. **GaussDB 与 PostgreSQL API 差异**：
    - `pg_current_xlog_location()` vs PostgreSQL 的 `pg_current_wal_lsn()` — Connector 自动兼容
    - `pg_replication_slot_advance()` vs PostgreSQL 的 `pg_logical_slot_advance()` — Connector 自动兼容
    - `pg_logical_slot_peek_changes` 返回列名为 `location`（非 `lsn`）— Connector 自动处理
-   - `decode-style` 和 `sending-batch` 选项仅在流式复制 API 模式下有效，SQL 函数模式不支持
-   - SQL 函数模式下 `parallel-decode-num` 有效，输出 JSON 格式
+   - `pg_logical_slot_peek_changes` 传入特定 LSN 参数后 `pg_replication_slot_advance` 会返回空结果 — Connector 始终用 NULL 作为 LSN 参数
+   - `decode-style` 和 `sending-batch` 选项仅在流式复制 API 模式下有效，SQL 函数模式不支持（报 `Option unknown` 错误）
+   - SQL 函数模式下 `parallel-decode-num` 可传入但无性能提升（瓶颈在 JSON 文本传输）
+   - 集中式 GaussDB `enable_thread_pool=on` 时，流式复制连接需走 HA 端口（数据端口+1）
 
-3. **轮询式限制**：
-   - DELETE 检测需要全表扫描，性能较差
-   - UPDATE 检测依赖 `updated_at` 字段
-   - 两次轮询间的变更可能丢失
-
-4. **类加载器配置**：如果遇到 `ClassNotFoundException`，请确保 Flink 配置为 `parent-first` 类加载策略：
+3. **类加载器配置**：如果遇到 `ClassNotFoundException`，请确保 Flink 配置为 `parent-first` 类加载策略：
    ```yaml
    # flink-conf.yaml
    classloader.resolve-order: parent-first
    ```
 
-5. **字符编码**：如果遇到乱码问题，可在 JDBC URL 中添加字符编码参数：
+4. **字符编码**：如果遇到乱码问题，可在 JDBC URL 中添加字符编码参数：
    ```
    jdbc:gaussdb://<host>:<port>/<database>?compatibleMode=mysql&characterEncoding=UTF-8
    ```
 
-6. **JDK 版本**：Connector 内置的 GaussDB JDBC 驱动为 `gaussdbjdbc-506.0.0.b058-jdk7`（兼容 JDK 8/11），在 JDK 8/11 环境下可直接使用。此驱动不支持流式复制 API，WAL 模式将自动回退到 SQL 函数模式（功能完整，仅延迟略高）。如需流式复制 API，需替换为 `gaussdbjdbc-506.0.0.b058.jar`（需 JDK 17+）。
+5. **流式复制 API 环境配置**：Connector 内置的 `gaussdbjdbc-506.0.0.b058-jdk7` 驱动已包含 `PGReplicationStream`（编译版本 JDK 8），JDK 11 即可使用流式复制 API。但流式复制连接（`replication=database`）需要：
+   - **gs_hba.conf 白名单**：添加 `host replication <user> <IP>/32 md5`（需运维操作，不支持 SQL 修改）
+   - **enable_thread_pool**：集中式默认 `on`，此时复制连接需走 HA 端口（数据端口+1，如 8001）。若 HA 端口不可达，需关闭 `enable_thread_pool`（postmaster 级参数，需重启实例）
+   - 如无法完成以上配置，Connector 自动回退到 SQL 函数模式
 
 ### ⚠️ 重要限制
 
@@ -533,28 +506,23 @@ CREATE TABLE student (
 
 **并行解码**：
 - GaussDB mppdb_decoding 支持 `parallel-decode-num`（1~20）并行解码线程
-- 流式复制 API 模式支持 `decode-style`（b/j/t）和 `sending-batch` 参数
-- SQL 函数模式仅支持 `parallel-decode-num`，输出 JSON 格式
-- 推荐配置：`parallel-decode-num=4`，`decode-style=b`，`sending-batch=true`
+- 流式复制 API 模式支持 `decode-style`（b/j/t）和 `sending-batch` 参数，**并行解码性能最优**
+- SQL 函数模式仅 `parallel-decode-num` 可传入，但因 `decode-style`/`sending-batch` 不支持，并行解码无实际性能提升
+- 推荐配置：`parallel-decode-num=4`，`decode-style=b`，`sending-batch=true`（需流式复制 API 环境）
 
-如无法修改配置，默认使用轮询式 CDC。
+如无法修改配置，Connector 将使用 SQL 函数模式（功能完整，并行解码性能受限）。
 
 ## 常见问题
 
 ### Q: CDC 能捕获所有变更吗？
 
-A: 取决于 CDC 模式：
-- **WAL 模式**: 可以捕获所有变更，包括 DDL
-- **轮询式**: 可能丢失两次轮询间的快速变更（同一行多次变更）
+A: WAL 模式可以捕获所有 INSERT/UPDATE/DELETE 变更。
 
-### Q: 如何切换 CDC 模式？
+### Q: 如何配置 CDC？
 
-A: 通过 `wal.mode` 参数显式切换：
-- `'wal.mode' = 'false'`（默认）：轮询式 CDC
-- `'wal.mode' = 'true'`：WAL 逻辑解码 CDC
+A: 使用 `wal.mode=true` 启用 WAL 逻辑解码：
 
 ```sql
--- WAL 模式 + 并行解码示例
 CREATE TABLE my_table_cdc (
     id INT,
     name STRING,
@@ -580,23 +548,43 @@ A:
 - 并行解码输出格式为 JSON 或 binary，由 `decode-style` 控制
 - 推荐生产环境使用 `parallel-decode-num=4`
 
-### Q: 为什么 WAL 模式报 UnsupportedClassVersionError？
+### Q: 为什么流式复制 API 连接报 `replication should connect HA port in thread_pool`？
 
-A: GaussDB JDBC 驱动 `gaussdbjdbc-506.0.0.b058.jar` 编译于 Java 17（class file version 61.0），在 JDK 11 环境下无法加载。
+A: 集中式 GaussDB 默认开启 `enable_thread_pool=on`，此模式下 `replication=database` 连接必须走 HA 端口（数据端口+1，如 8001），数据端口（8000）不接受复制连接。
 
 解决方案：
-- **方案一**：升级运行环境到 JDK 17+（推荐，支持流式复制 API 全部功能）
-- **方案二**：使用兼容版驱动 `gaussdbjdbc-506.0.0.b058-jdk7.jar`（JDK 11 可用，但 WAL 模式回退到 SQL 函数模式，仅 `parallel-decode-num` 有效）
+- **方案一**：开放 HA 端口（8001），流式复制连接使用该端口
+- **方案二**：关闭 `enable_thread_pool`（需修改配置文件后重启实例，影响连接池性能）
+- **方案三**：不做配置，Connector 自动回退到 SQL 函数模式
+
+### Q: 为什么流式复制 API 连接报 `No gs_hba.conf entry for replication connection`？
+
+A: GaussDB 的 `gs_hba.conf` 访问控制文件中没有允许 replication 类型连接的规则。
+
+解决方案：需联系运维在 `gs_hba.conf` 中添加白名单规则（不支持 SQL 修改）：
+```
+host    replication    root    <客户端IP>/32    md5
+```
+
+### Q: SQL 函数模式下并行解码为什么没有性能提升？
+
+A: 经实测分析，SQL 函数模式下 82% 的耗时在 JSON 文本数据传输，服务端解码仅占 18%。多线程解码优化的 18% 部分被传输瓶颈掩盖。
+
+原因：`pg_logical_slot_peek_changes` 是标准 SQL 查询，结果通过单个 ResultSet 返回，输出固定为 JSON 文本格式（每行平均 325 字节），不支持 `decode-style`（二进制格式）和 `sending-batch`（批量发送）。
+
+要发挥并行解码性能，需启用流式复制 API 模式（支持 binary 格式 + 批量发送）。
 
 ### Q: decode-style 和 sending-batch 不生效？
 
-A: 这两个参数仅在 GaussDB JDBC 流式复制 API 模式下有效。如果 JDBC 驱动不支持流式复制 API（或使用了 JDK7 兼容版驱动），Connector 会自动回退到 SQL 函数模式，此时仅 `parallel-decode-num` 有效，输出格式为 JSON。
+A: 这两个参数仅在使用 GaussDB 流式复制 API 模式时有效。SQL 函数模式下 mppdb_decoding 插件不识别这两个参数（会报 `Option "decode-style" = "b" is unknown` 错误），Connector 会自动跳过。
+
+要启用流式复制 API，需确保：
+1. gs_hba.conf 配置了 replication 白名单
+2. enable_thread_pool=off 或 HA 端口（数据端口+1）可达
 
 ### Q: CDC 会影响数据库性能吗？
 
-A: 
-- **WAL 模式**: 影响很小，被动接收 WAL 记录
-- **轮询式**: 有一定影响，特别是 DELETE 检测需要全表扫描
+A: WAL 模式影响很小，被动接收 WAL 记录。
 
 ### Q: 如何监控 CDC 延迟？
 
