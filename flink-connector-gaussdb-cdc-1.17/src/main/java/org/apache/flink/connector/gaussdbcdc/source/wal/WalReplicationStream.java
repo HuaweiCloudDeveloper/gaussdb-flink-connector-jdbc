@@ -136,11 +136,23 @@ public class WalReplicationStream {
     /** Try to initialize using GaussDB JDBC replication API. */
     private void initializeReplicationApi() throws Exception {
         // Check if PGConnection interface is available
-        Class<?> pgConnectionClass =
-                Class.forName(
-                        "org.postgresql.PGConnection",
-                        false,
-                        connection.getClass().getClassLoader());
+        // GaussDB JDBC driver uses com.huawei.gaussdb.jdbc.PGConnection
+        // instead of org.postgresql.PGConnection
+        Class<?> pgConnectionClass;
+        try {
+            pgConnectionClass =
+                    Class.forName(
+                            "com.huawei.gaussdb.jdbc.PGConnection",
+                            false,
+                            connection.getClass().getClassLoader());
+        } catch (ClassNotFoundException e) {
+            // Fallback to PostgreSQL PGConnection for compatibility
+            pgConnectionClass =
+                    Class.forName(
+                            "org.postgresql.PGConnection",
+                            false,
+                            connection.getClass().getClassLoader());
+        }
 
         if (!pgConnectionClass.isInstance(connection)) {
             throw new IllegalStateException("Connection is not a PGConnection instance");
