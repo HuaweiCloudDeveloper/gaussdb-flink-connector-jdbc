@@ -177,7 +177,17 @@ class WalReplicationStreamJsonTest {
         java.sql.Connection conn =
                 new WalReplicationStreamJsonTest().createMockConnectionForBuildOptions();
         WalReplicationStream stream =
-                new WalReplicationStream(conn, "slot", "mppdb_decoding", 4, "b", true, 1000);
+                new WalReplicationStream(
+                        conn,
+                        "jdbc:gaussdb://localhost:8000/test",
+                        "root",
+                        "pass",
+                        "slot",
+                        "mppdb_decoding",
+                        4,
+                        "b",
+                        true,
+                        1000);
         java.util.Properties props = invokeBuildSlotOptions(stream);
         assertThat(props.getProperty("parallel-decode-num")).isEqualTo("4");
         assertThat(props.getProperty("decode-style")).isEqualTo("b");
@@ -191,7 +201,17 @@ class WalReplicationStreamJsonTest {
         java.sql.Connection conn =
                 new WalReplicationStreamJsonTest().createMockConnectionForBuildOptions();
         WalReplicationStream stream =
-                new WalReplicationStream(conn, "slot", "mppdb_decoding", 1, "b", false, 1000);
+                new WalReplicationStream(
+                        conn,
+                        "jdbc:gaussdb://localhost:8000/test",
+                        "root",
+                        "pass",
+                        "slot",
+                        "mppdb_decoding",
+                        1,
+                        "b",
+                        false,
+                        1000);
         java.util.Properties props = invokeBuildSlotOptions(stream);
         assertThat(props.getProperty("parallel-decode-num")).isNull();
         assertThat(props.getProperty("decode-style")).isNull();
@@ -202,7 +222,17 @@ class WalReplicationStreamJsonTest {
     void testIsUseReplicationApi() {
         java.sql.Connection conn = createMockConnectionForBuildOptions();
         WalReplicationStream stream =
-                new WalReplicationStream(conn, "slot", "mppdb_decoding", 1, "b", false, 1000);
+                new WalReplicationStream(
+                        conn,
+                        "jdbc:gaussdb://localhost:8000/test",
+                        "root",
+                        "pass",
+                        "slot",
+                        "mppdb_decoding",
+                        1,
+                        "b",
+                        false,
+                        1000);
         assertThat(stream.isUseReplicationApi()).isFalse();
     }
 
@@ -215,7 +245,17 @@ class WalReplicationStreamJsonTest {
     private WalChange invokeParseChangeData(String lsn, long xid, String data) throws Exception {
         java.sql.Connection conn = org.mockito.Mockito.mock(java.sql.Connection.class);
         WalReplicationStream stream =
-                new WalReplicationStream(conn, "slot", "mppdb_decoding", 1, "b", false, 1000);
+                new WalReplicationStream(
+                        conn,
+                        "jdbc:gaussdb://localhost:8000/test",
+                        "root",
+                        "pass",
+                        "slot",
+                        "mppdb_decoding",
+                        1,
+                        "b",
+                        false,
+                        1000);
         java.lang.reflect.Method method =
                 WalReplicationStream.class.getDeclaredMethod(
                         "parseChangeData", String.class, long.class, String.class);
@@ -226,7 +266,17 @@ class WalReplicationStreamJsonTest {
     private int invokeMapTypeNameToOid(String typeName) throws Exception {
         java.sql.Connection conn = org.mockito.Mockito.mock(java.sql.Connection.class);
         WalReplicationStream stream =
-                new WalReplicationStream(conn, "slot", "mppdb_decoding", 1, "b", false, 1000);
+                new WalReplicationStream(
+                        conn,
+                        "jdbc:gaussdb://localhost:8000/test",
+                        "root",
+                        "pass",
+                        "slot",
+                        "mppdb_decoding",
+                        1,
+                        "b",
+                        false,
+                        1000);
         java.lang.reflect.Method method =
                 WalReplicationStream.class.getDeclaredMethod("mapTypeNameToOid", String.class);
         method.setAccessible(true);

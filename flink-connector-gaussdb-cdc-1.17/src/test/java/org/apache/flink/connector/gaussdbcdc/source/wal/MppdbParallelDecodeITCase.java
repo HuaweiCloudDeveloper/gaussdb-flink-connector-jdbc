@@ -216,7 +216,16 @@ class MppdbParallelDecodeITCase {
 
         WalReplicationStream stream =
                 new WalReplicationStream(
-                        connection, slotName, "mppdb_decoding", 4, "b", false, 1000);
+                        connection,
+                        String.format("jdbc:gaussdb://%s:%d/%s", HOST, PORT, DATABASE),
+                        USERNAME,
+                        PASSWORD,
+                        slotName,
+                        "mppdb_decoding",
+                        4,
+                        "b",
+                        false,
+                        1000);
 
         // Initialize should create the slot and start streaming
         stream.initialize();

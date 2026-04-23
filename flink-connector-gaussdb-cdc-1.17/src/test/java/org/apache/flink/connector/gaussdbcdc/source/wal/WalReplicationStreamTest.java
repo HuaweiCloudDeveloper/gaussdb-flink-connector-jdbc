@@ -42,7 +42,17 @@ class WalReplicationStreamTest {
     @Test
     void testConstructor() {
         WalReplicationStream stream =
-                new WalReplicationStream(connection, "test_slot", "pgoutput", 1, "b", false, 1000);
+                new WalReplicationStream(
+                        connection,
+                        "jdbc:gaussdb://localhost:8000/test",
+                        "root",
+                        "pass",
+                        "test_slot",
+                        "pgoutput",
+                        1,
+                        "b",
+                        false,
+                        1000);
         assertThat(stream.isRunning()).isFalse();
         assertThat(stream.getLastLsn()).isNull();
     }
@@ -50,7 +60,17 @@ class WalReplicationStreamTest {
     @Test
     void testClose() {
         WalReplicationStream stream =
-                new WalReplicationStream(connection, "test_slot", "pgoutput", 1, "b", false, 1000);
+                new WalReplicationStream(
+                        connection,
+                        "jdbc:gaussdb://localhost:8000/test",
+                        "root",
+                        "pass",
+                        "test_slot",
+                        "pgoutput",
+                        1,
+                        "b",
+                        false,
+                        1000);
         stream.close();
         assertThat(stream.isRunning()).isFalse();
     }
@@ -79,7 +99,17 @@ class WalReplicationStreamTest {
         when(connection.prepareStatement("SELECT pg_current_xlog_location()")).thenReturn(lsnStmt);
 
         WalReplicationStream stream =
-                new WalReplicationStream(connection, "test_slot", "pgoutput", 1, "b", false, 1000);
+                new WalReplicationStream(
+                        connection,
+                        "jdbc:gaussdb://localhost:8000/test",
+                        "root",
+                        "pass",
+                        "test_slot",
+                        "pgoutput",
+                        1,
+                        "b",
+                        false,
+                        1000);
         stream.initialize();
 
         assertThat(stream.isRunning()).isTrue();
@@ -105,7 +135,17 @@ class WalReplicationStreamTest {
         when(connection.prepareStatement("SELECT pg_current_xlog_location()")).thenReturn(lsnStmt);
 
         WalReplicationStream stream =
-                new WalReplicationStream(connection, "test_slot", "pgoutput", 1, "b", false, 1000);
+                new WalReplicationStream(
+                        connection,
+                        "jdbc:gaussdb://localhost:8000/test",
+                        "root",
+                        "pass",
+                        "test_slot",
+                        "pgoutput",
+                        1,
+                        "b",
+                        false,
+                        1000);
         stream.initialize();
 
         assertThat(stream.isRunning()).isTrue();
@@ -118,7 +158,17 @@ class WalReplicationStreamTest {
                 .thenReturn(dropStmt);
 
         WalReplicationStream stream =
-                new WalReplicationStream(connection, "test_slot", "pgoutput", 1, "b", false, 1000);
+                new WalReplicationStream(
+                        connection,
+                        "jdbc:gaussdb://localhost:8000/test",
+                        "root",
+                        "pass",
+                        "test_slot",
+                        "pgoutput",
+                        1,
+                        "b",
+                        false,
+                        1000);
         stream.dropSlot();
         // No exception means success
     }
@@ -160,7 +210,17 @@ class WalReplicationStreamTest {
                 .thenReturn(advanceStmt);
 
         WalReplicationStream stream =
-                new WalReplicationStream(connection, "test_slot", "pgoutput", 1, "b", false, 1000);
+                new WalReplicationStream(
+                        connection,
+                        "jdbc:gaussdb://localhost:8000/test",
+                        "root",
+                        "pass",
+                        "test_slot",
+                        "pgoutput",
+                        1,
+                        "b",
+                        false,
+                        1000);
         stream.initialize();
 
         java.util.List<WalChange> changes = stream.readChanges(10);
@@ -210,7 +270,16 @@ class WalReplicationStreamTest {
 
         WalReplicationStream stream =
                 new WalReplicationStream(
-                        connection, "test_slot", "mppdb_decoding", 4, "b", false, 1000);
+                        connection,
+                        "jdbc:gaussdb://localhost:8000/test",
+                        "root",
+                        "pass",
+                        "test_slot",
+                        "mppdb_decoding",
+                        4,
+                        "b",
+                        false,
+                        1000);
         stream.initialize();
 
         java.util.List<WalChange> changes = stream.readChanges(10);
@@ -247,7 +316,16 @@ class WalReplicationStreamTest {
 
         WalReplicationStream stream =
                 new WalReplicationStream(
-                        connection, "test_slot", "mppdb_decoding", 1, "b", false, 1000);
+                        connection,
+                        "jdbc:gaussdb://localhost:8000/test",
+                        "root",
+                        "pass",
+                        "test_slot",
+                        "mppdb_decoding",
+                        1,
+                        "b",
+                        false,
+                        1000);
         stream.initialize();
 
         java.util.List<WalChange> changes = stream.readChanges(10);
@@ -259,7 +337,16 @@ class WalReplicationStreamTest {
         // Test closing when replicationStream is set
         WalReplicationStream stream =
                 new WalReplicationStream(
-                        connection, "test_slot", "mppdb_decoding", 1, "b", false, 1000);
+                        connection,
+                        "jdbc:gaussdb://localhost:8000/test",
+                        "root",
+                        "pass",
+                        "test_slot",
+                        "mppdb_decoding",
+                        1,
+                        "b",
+                        false,
+                        1000);
 
         // Use reflection to set the replicationStream field
         java.lang.reflect.Field replStreamField =

@@ -26,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.sql.Connection;
+import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -59,6 +60,9 @@ public class WalReplicationStream {
     private static final Logger LOG = LoggerFactory.getLogger(WalReplicationStream.class);
 
     private final Connection connection;
+    private final String jdbcUrl;
+    private final String username;
+    private final String password;
     private final String slotName;
     private final String pluginName;
     private final int parallelDecodeNum;
@@ -75,8 +79,14 @@ public class WalReplicationStream {
     /** JDBC replication stream (PGReplicationStream), may be null if API unavailable. */
     private Object replicationStream;
 
+    /** Dedicated replication connection, separate from the main data connection. */
+    private Connection replicationConnection;
+
     public WalReplicationStream(
             Connection connection,
+            String jdbcUrl,
+            String username,
+            String password,
             String slotName,
             String pluginName,
             int parallelDecodeNum,
@@ -84,6 +94,9 @@ public class WalReplicationStream {
             boolean sendingBatch,
             int fetchSize) {
         this.connection = connection;
+        this.jdbcUrl = jdbcUrl;
+        this.username = username;
+        this.password = password;
         this.slotName = slotName;
         this.pluginName = pluginName;
         this.parallelDecodeNum = parallelDecodeNum;
@@ -133,8 +146,22 @@ public class WalReplicationStream {
         running = true;
     }
 
-    /** Try to initialize using GaussDB JDBC replication API. */
+    /**
+     * Try to initialize using GaussDB JDBC replication API.
+     *
+     * <p>Creates a dedicated replication connection (with replication=database parameter) and
+     * starts a logical replication stream. Falls back to SQL function polling if the replication
+     * connection cannot be established (e.g., HA port not available in thread_pool mode).
+     */
     private void initializeReplicationApi() throws Exception {
+        // Build replication connection URL
+        // GaussDB requires a separate connection with replication=database for streaming
+        String replUrl = buildReplicationUrl(jdbcUrl);
+        LOG.info("Attempting to create replication connection: {}", replUrl);
+
+        // Create dedicated replication connection
+        replicationConnection = DriverManager.getConnection(replUrl, username, password);
+
         // Check if PGConnection interface is available
         // GaussDB JDBC driver uses com.huawei.gaussdb.jdbc.PGConnection
         // instead of org.postgresql.PGConnection
@@ -144,23 +171,24 @@ public class WalReplicationStream {
                     Class.forName(
                             "com.huawei.gaussdb.jdbc.PGConnection",
                             false,
-                            connection.getClass().getClassLoader());
+                            replicationConnection.getClass().getClassLoader());
         } catch (ClassNotFoundException e) {
             // Fallback to PostgreSQL PGConnection for compatibility
             pgConnectionClass =
                     Class.forName(
                             "org.postgresql.PGConnection",
                             false,
-                            connection.getClass().getClassLoader());
+                            replicationConnection.getClass().getClassLoader());
         }
 
-        if (!pgConnectionClass.isInstance(connection)) {
-            throw new IllegalStateException("Connection is not a PGConnection instance");
+        if (!pgConnectionClass.isInstance(replicationConnection)) {
+            throw new IllegalStateException(
+                    "Replication connection is not a PGConnection instance");
         }
 
         // Get replication API: conn.getReplicationAPI()
         Method getReplicationAPI = pgConnectionClass.getMethod("getReplicationAPI");
-        Object replApi = getReplicationAPI.invoke(connection);
+        Object replApi = getReplicationAPI.invoke(replicationConnection);
 
         // Build replication stream options
         Properties slotOptions = buildSlotOptions();
@@ -191,6 +219,45 @@ public class WalReplicationStream {
         replicationStream = startMethod.invoke(slotBuilder);
 
         LOG.info("JDBC replication stream started successfully");
+    }
+
+    /**
+     * Build a replication-compatible JDBC URL from the original URL.
+     *
+     * <p>Adds or ensures the following parameters in the URL:
+     *
+     * <ul>
+     *   <li>replication=database - required for logical replication streaming
+     *   <li>preferQueryMode=simple - required for replication protocol
+     *   <li>assumeMinServerVersion=9.4 - for replication protocol compatibility
+     * </ul>
+     */
+    private String buildReplicationUrl(String originalUrl) {
+        String url = originalUrl;
+
+        // Remove trailing slash after database name if present
+        // and ensure we can append parameters properly
+        if (!url.contains("?")) {
+            url += "?";
+        } else {
+            url += "&";
+        }
+
+        // Add replication parameters (don't duplicate if already present)
+        if (!url.contains("replication=")) {
+            url += "replication=database&";
+        }
+        if (!url.contains("preferQueryMode=")) {
+            url += "preferQueryMode=simple&";
+        }
+        if (!url.contains("assumeMinServerVersion=")) {
+            url += "assumeMinServerVersion=9.4&";
+        }
+
+        // Remove trailing & or ?
+        url = url.replaceAll("[&?]$", "");
+
+        return url;
     }
 
     /** Build slot options for parallel decoding. */
@@ -726,6 +793,13 @@ public class WalReplicationStream {
                 closeMethod.invoke(replicationStream);
             } catch (Exception e) {
                 LOG.debug("Failed to close replication stream", e);
+            }
+        }
+        if (replicationConnection != null) {
+            try {
+                replicationConnection.close();
+            } catch (Exception e) {
+                LOG.debug("Failed to close replication connection", e);
             }
         }
         LOG.info("WAL replication stream closed");

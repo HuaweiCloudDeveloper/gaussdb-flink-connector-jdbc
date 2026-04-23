@@ -143,6 +143,9 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
                 this.walReplicationStream =
                         new WalReplicationStream(
                                 connection,
+                                url,
+                                username,
+                                password,
                                 slotName,
                                 decodePlugin,
                                 parallelDecodeNum,
@@ -356,7 +359,9 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
             case 19: // name
                 return StringData.fromString(value);
             case 1700: // numeric
-                return DecimalData.fromBigDecimal(new java.math.BigDecimal(value), 38, 18);
+                java.math.BigDecimal numericBd = new java.math.BigDecimal(value);
+                return DecimalData.fromBigDecimal(
+                        numericBd, numericBd.precision(), numericBd.scale());
             case 1114: // timestamp
                 return TimestampData.fromLocalDateTime(
                         java.time.LocalDateTime.parse(
@@ -447,7 +452,21 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
                     break;
                 case java.sql.Types.DECIMAL:
                 case java.sql.Types.NUMERIC:
-                    value = DecimalData.fromBigDecimal(rs.getBigDecimal(i), 38, 18);
+                    java.math.BigDecimal bd = rs.getBigDecimal(i);
+                    if (bd != null) {
+                        int p = meta.getPrecision(i);
+                        int s = meta.getScale(i);
+                        // Flink compact decimal supports precision <= 18
+                        // Use actual precision/scale from metadata
+                        value = DecimalData.fromBigDecimal(bd, p, s);
+                        // fromBigDecimal returns null if bd.precision() > declared precision
+                        if (value == null) {
+                            // Fallback: adjust precision to fit the actual value
+                            value = DecimalData.fromBigDecimal(bd, bd.precision(), s);
+                        }
+                    } else {
+                        value = null;
+                    }
                     break;
                 case java.sql.Types.TIMESTAMP:
                 case java.sql.Types.TIMESTAMP_WITH_TIMEZONE:
