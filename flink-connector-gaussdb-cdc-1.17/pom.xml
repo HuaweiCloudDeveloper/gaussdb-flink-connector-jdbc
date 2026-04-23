@@ -17,7 +17,6 @@
     <properties>
         <flink.version>1.17.2</flink.version>
         <gaussdb.jdbc.version>506.0.0.b058-jdk7</gaussdb.jdbc.version>
-        <postgres.replication.version>42.6.0</postgres.replication.version>
         <maven.compiler.source>11</maven.compiler.source>
         <maven.compiler.target>11</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -53,12 +52,7 @@
             <version>${gaussdb.jdbc.version}</version>
         </dependency>
 
-        <!-- PostgreSQL Replication Connection (for CDC) -->
-        <dependency>
-            <groupId>org.postgresql</groupId>
-            <artifactId>postgresql</artifactId>
-            <version>${postgres.replication.version}</version>
-        </dependency>
+
 
         <!-- Logging -->
         <dependency>

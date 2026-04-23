@@ -166,24 +166,13 @@ public class WalReplicationStream {
         // Create dedicated replication connection
         replicationConnection = DriverManager.getConnection(replUrl, username, password);
 
-        // Check if PGConnection interface is available
-        // GaussDB JDBC driver uses com.huawei.gaussdb.jdbc.PGConnection
-        // instead of org.postgresql.PGConnection
-        Class<?> pgConnectionClass;
-        try {
-            pgConnectionClass =
-                    Class.forName(
-                            "com.huawei.gaussdb.jdbc.PGConnection",
-                            false,
-                            replicationConnection.getClass().getClassLoader());
-        } catch (ClassNotFoundException e) {
-            // Fallback to PostgreSQL PGConnection for compatibility
-            pgConnectionClass =
-                    Class.forName(
-                            "org.postgresql.PGConnection",
-                            false,
-                            replicationConnection.getClass().getClassLoader());
-        }
+        // GaussDB JDBC driver provides com.huawei.gaussdb.jdbc.PGConnection
+        // which includes getReplicationAPI() for streaming replication
+        Class<?> pgConnectionClass =
+                Class.forName(
+                        "com.huawei.gaussdb.jdbc.PGConnection",
+                        false,
+                        replicationConnection.getClass().getClassLoader());
 
         if (!pgConnectionClass.isInstance(replicationConnection)) {
             throw new IllegalStateException(
