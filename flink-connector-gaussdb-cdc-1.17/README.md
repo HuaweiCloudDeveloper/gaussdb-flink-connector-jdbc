@@ -184,7 +184,25 @@ CREATE TABLE student_cdc (
 SELECT * FROM student_cdc;
 ```
 
-#### WAL 式 CDC + 并行解码
+#### WAL 式 CDC + 并行解码（推荐）
+
+**启用并行解码的完整步骤**：
+
+**1. 配置 GaussDB 数据库**（需要运维权限）
+
+```sql
+-- 1. 确认用户有复制权限
+ALTER USER root REPLICATION;
+
+-- 2. 创建复制槽（使用 mppdb_decoding 插件）
+SELECT pg_create_logical_replication_slot('flink_cdc_slot', 'mppdb_decoding');
+```
+
+> 如果 GaussDB 的 `wal_level` 不是 `logical`，需先修改：
+> - **Console 控制台**：参数管理 → 高危参数 → 修改 `wal_level` 为 `logical` → 重启实例
+> - **命令行**：`gs_guc reload -Z datanode -N all -I all -c "wal_level=logical"` → 重启 GaussDB
+
+**2. 在 Flink SQL 中配置 CDC 源表**
 
 ```sql
 -- 创建 WAL 模式 CDC 源表（推荐，毫秒级延迟）
@@ -203,22 +221,37 @@ CREATE TABLE student_cdc_wal (
     'username' = 'root',
     'password' = 'password',
 
-    -- WAL 模式配置
+    -- ★ WAL 模式开关（必须）
     'wal.mode' = 'true',
+
+    -- ★ 并行解码配置（推荐）
+    'parallel-decode-num' = '4',     -- 并行解码线程数，1=串行，2~20=并行，推荐 4
     'decode.plugin' = 'mppdb_decoding',
     'slot.name' = 'flink_cdc_slot',
 
-    -- 并行解码配置
-    'parallel-decode-num' = '4',     -- 4 个并行解码线程
-    'decode-style' = 'b',            -- binary 格式（流式复制 API 时生效）
-    'sending-batch' = 'true'         -- 批量发送（流式复制 API 时生效）
+    -- 以下参数仅 JDK 17+ 流式复制 API 模式生效，JDK 8/11 环境下自动忽略
+    'decode-style' = 'b',            -- binary 格式
+    'sending-batch' = 'true'         -- 批量发送
 );
 
 -- 查询 CDC 数据
 SELECT * FROM student_cdc_wal;
 ```
 
-> **说明**：`decode-style` 和 `sending-batch` 仅在使用 GaussDB JDBC 流式复制 API 时生效。当 JDBC 驱动不支持流式复制 API 时，自动回退到 SQL 函数模式（`pg_logical_slot_peek_changes`），此时仅 `parallel-decode-num` 生效，输出为 JSON 格式。
+**3. 并行解码配置速查**
+
+| 参数 | 串行解码（默认） | 并行解码（推荐） | 说明 |
+|------|----------------|----------------|------|
+| `wal.mode` | `true` | `true` | 必须开启 |
+| `parallel-decode-num` | `1` | `4` | 并行线程数，2~20 为并行 |
+| `decode.plugin` | `mppdb_decoding` | `mppdb_decoding` | GaussDB 原生解码插件 |
+| `slot.name` | `flink_cdc_slot` | `flink_cdc_slot` | 与数据库中创建的复制槽对应 |
+
+> **说明**：
+> - `parallel-decode-num` 默认值为 1（串行解码），**需要显式设置 >1 才能启用并行解码**
+> - `decode-style` 和 `sending-batch` 仅在使用 GaussDB JDBC 流式复制 API（需 JDK 17+ 驱动）时生效
+> - 当前 Connector 内置的 `gaussdbjdbc-jdk7` 驱动不支持流式复制 API，WAL 模式自动回退到 SQL 函数模式，此时仅 `parallel-decode-num` 有效，输出为 JSON 格式
+> - 如需流式复制 API 全部功能（binary 格式、批量发送），需替换为 `gaussdbjdbc-506.0.0.b058.jar`（需 JDK 17+）
 
 ### 3. 实时捕获变更示例
 
