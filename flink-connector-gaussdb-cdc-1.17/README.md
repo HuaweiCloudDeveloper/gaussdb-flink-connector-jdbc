@@ -263,6 +263,8 @@ CREATE TABLE student_cdc_wal (
 
 > **性能对比（10万行 INSERT 实测）**：
 >
+> **测试模型**：`id SERIAL, name VARCHAR(100), age INT, score DECIMAL(10,2), remark VARCHAR(200)`，单行数据约 80~100 字节。实际吞吐量与行大小密切相关，请以实际业务数据为准。
+>
 > | 模式 | parallel-decode-num | decode-style | sending-batch | 吞吐量 | 数据量 |
 > |------|-------------------|-------------|--------------|--------|-------|
 > | SQL 函数模式 | 1 | 固定 JSON | 不支持 | ~7,900 rows/s | - |
@@ -273,6 +275,8 @@ CREATE TABLE student_cdc_wal (
 > | 流式复制 API | 8 | b | true | **~16,700 rows/s** | binary（约 JSON 一半） |
 >
 > **结论**：流式复制 API 整体吞吐量约为 SQL 函数模式的 2~2.5 倍。并行解码线程数增加对吞吐量提升有限，单连接传输通道是瓶颈。推荐配置 `parallel-decode-num=4` 即可。
+>
+> ⚠️ **重要**：以上数据基于轻量行（~80 字节/行）的 INSERT 场景。客户实际业务行通常更大（500 字节~数 KB），网络传输占比更高，流式复制 API 的 binary 格式优势会更明显。建议客户基于实际业务数据量自行验证。
 
 ### 3. 实时捕获变更示例
 
