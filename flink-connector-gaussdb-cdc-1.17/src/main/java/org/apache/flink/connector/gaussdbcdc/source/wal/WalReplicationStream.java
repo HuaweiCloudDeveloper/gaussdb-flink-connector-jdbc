@@ -285,7 +285,19 @@ public class WalReplicationStream {
         }
     }
 
-    /** Read changes using JDBC replication API (streaming mode). */
+    /**
+     * Read changes using JDBC replication API (streaming mode).
+     *
+     * <p>Uses readPending() to read available batches from the replication stream. After each
+     * batch, updates the flushed LSN and forces a status update to the server, which allows the
+     * server to send more data. This is necessary because mppdb_decoding with sending-batch=1
+     * accumulates data into 1MB batches, and the server waits for client acknowledgement (status
+     * update) before sending subsequent batches.
+     *
+     * <p>For decode-style=b (binary), each batch contains compact binary-encoded change events
+     * decoded by MppdbBinaryDecoder. For decode-style=j (JSON), each batch contains newline-
+     * separated JSON change events.
+     */
     private List<WalChange> readChangesFromReplicationApi(int maxChanges) throws SQLException {
         List<WalChange> changes = new ArrayList<>();
 
@@ -300,27 +312,88 @@ public class WalReplicationStream {
             }
 
             // Read pending changes: stream.readPending()
+            // Loop to read all available batches, then force status update
+            // to allow server to send more data
             Method readPendingMethod = replicationStream.getClass().getMethod("readPending");
-            ByteBuffer buffer = (ByteBuffer) readPendingMethod.invoke(replicationStream);
+            Method forceUpdateStatusMethod =
+                    replicationStream.getClass().getMethod("forceUpdateStatus");
 
-            if (buffer != null && buffer.hasRemaining()) {
+            int batchCount = 0;
+            while (changes.size() < maxChanges) {
+                ByteBuffer buffer = (ByteBuffer) readPendingMethod.invoke(replicationStream);
+                if (buffer == null || !buffer.hasRemaining()) {
+                    // No more data currently available in buffer.
+                    // If we have already read some data, return it.
+                    // If not, try a blocking read once to wait for new data.
+                    if (batchCount == 0 && changes.isEmpty()) {
+                        try {
+                            // Blocking read with timeout: wait for the next message
+                            Method readMethod = replicationStream.getClass().getMethod("read");
+                            buffer = (ByteBuffer) readMethod.invoke(replicationStream);
+                        } catch (java.lang.reflect.InvocationTargetException e) {
+                            // read() may throw SQLException if stream is closed/timed out
+                            if (e.getCause() instanceof SQLException) {
+                                LOG.debug("Blocking read failed: {}", e.getCause().getMessage());
+                                break;
+                            }
+                            throw e;
+                        }
+                        if (buffer == null || !buffer.hasRemaining()) {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                batchCount++;
                 byte[] data = new byte[buffer.remaining()];
                 buffer.get(data);
 
-                // Decode using mppdb_decoding binary decoder
-                changes = binaryDecoder.decodeBatch(data);
+                // Decode the batch based on decode-style
+                List<WalChange> batchChanges;
+                if ("b".equals(decodeStyle)) {
+                    // Binary format: use MppdbBinaryDecoder
+                    batchChanges = binaryDecoder.decodeBatch(data);
+                } else {
+                    // JSON format (j) or text (t): parse as newline-separated JSON events
+                    batchChanges = parseJsonBatch(data);
+                }
 
-                // Update last LSN
-                if (!changes.isEmpty()) {
-                    WalChange lastChange = changes.get(changes.size() - 1);
+                changes.addAll(batchChanges);
+
+                // Update last LSN from decoded changes
+                if (!batchChanges.isEmpty()) {
+                    WalChange lastChange = batchChanges.get(batchChanges.size() - 1);
                     if (lastChange.getLsn() != null) {
                         lastLsn = lastChange.getLsn();
                     }
                 }
 
-                // Flush LSN to confirm processing
-                Method flushMethod = replicationStream.getClass().getMethod("flush");
-                flushMethod.invoke(replicationStream);
+                // Also try to get LSN directly from the stream (more reliable
+                // for flow control than extracting from decoded data)
+                String streamLsn = getLastReceiveLsn();
+                if (streamLsn != null) {
+                    lastLsn = streamLsn;
+                }
+
+                // Update flushed LSN on the stream to acknowledge processing
+                updateFlushedLsn(lastLsn);
+
+                // Force status update so the server can send more batches
+                forceUpdateStatusMethod.invoke(replicationStream);
+
+                if (batchCount >= 100) {
+                    // Safety: don't read too many batches in one call
+                    break;
+                }
+            }
+
+            if (batchCount > 0) {
+                LOG.debug(
+                        "Read {} changes from {} batches via replication API",
+                        changes.size(),
+                        batchCount);
             }
         } catch (java.lang.reflect.InvocationTargetException e) {
             Throwable cause = e.getCause();
@@ -332,6 +405,99 @@ public class WalReplicationStream {
             throw new SQLException("Failed to read from replication stream", e);
         }
 
+        return changes;
+    }
+
+    /**
+     * Get the last received LSN from the replication stream.
+     *
+     * <p>This is more reliable for flow control than extracting LSN from decoded data, because the
+     * stream-level LSN is always available and tracks the server's send position.
+     */
+    private String getLastReceiveLsn() {
+        try {
+            Method getLastReceiveLSN = replicationStream.getClass().getMethod("getLastReceiveLSN");
+            Object lsnObj = getLastReceiveLSN.invoke(replicationStream);
+            if (lsnObj != null) {
+                return lsnObj.toString();
+            }
+        } catch (Exception e) {
+            LOG.debug("Could not get last receive LSN: {}", e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * Update the flushed LSN on the replication stream to acknowledge processed changes.
+     *
+     * <p>This is critical for flow control: the server monitors the client's flushed LSN to
+     * determine when it can send more data. Without updating this, the server stops sending after a
+     * few batches.
+     */
+    private void updateFlushedLsn(String lsn) {
+        try {
+            Class<?> lsnClass =
+                    Class.forName(
+                            "com.huawei.gaussdb.jdbc.replication.LogSequenceNumber",
+                            false,
+                            replicationStream.getClass().getClassLoader());
+            Method valueOfMethod = lsnClass.getMethod("valueOf", String.class);
+            Object lsnObj = valueOfMethod.invoke(null, lsn);
+
+            Method setFlushedLSN =
+                    replicationStream.getClass().getMethod("setFlushedLSN", lsnClass);
+            setFlushedLSN.invoke(replicationStream, lsnObj);
+        } catch (Exception e) {
+            LOG.debug("Could not update flushed LSN: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Parse a batch of JSON-encoded change events.
+     *
+     * <p>When decode-style=j (or default), mppdb_decoding outputs change events as JSON strings.
+     * With sending-batch=1, multiple JSON events are concatenated into a single batch with binary
+     * framing. The format is: [2-byte length prefix][JSON data] repeated, with possible
+     * BEGIN/COMMIT markers.
+     */
+    private List<WalChange> parseJsonBatch(byte[] data) {
+        List<WalChange> changes = new ArrayList<>();
+        String content = new String(data, java.nio.charset.StandardCharsets.UTF_8);
+
+        // The batch may contain a mix of binary headers and JSON payloads.
+        // Extract JSON objects by finding { ... } patterns
+        int i = 0;
+        while (i < content.length()) {
+            int jsonStart = content.indexOf('{', i);
+            if (jsonStart == -1) {
+                break;
+            }
+            // Find matching closing brace
+            int depth = 0;
+            int jsonEnd = jsonStart;
+            for (int j = jsonStart; j < content.length(); j++) {
+                char c = content.charAt(j);
+                if (c == '{') {
+                    depth++;
+                } else if (c == '}') {
+                    depth--;
+                }
+                if (depth == 0) {
+                    jsonEnd = j;
+                    break;
+                }
+            }
+            if (depth == 0) {
+                String jsonStr = content.substring(jsonStart, jsonEnd + 1);
+                WalChange change = parseChangeData(lastLsn, 0, jsonStr);
+                if (change != null) {
+                    changes.add(change);
+                }
+                i = jsonEnd + 1;
+            } else {
+                break;
+            }
+        }
         return changes;
     }
 
