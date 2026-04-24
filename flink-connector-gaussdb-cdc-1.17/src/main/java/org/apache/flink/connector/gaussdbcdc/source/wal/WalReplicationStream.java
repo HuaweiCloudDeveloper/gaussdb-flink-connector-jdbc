@@ -323,27 +323,8 @@ public class WalReplicationStream {
                 ByteBuffer buffer = (ByteBuffer) readPendingMethod.invoke(replicationStream);
                 if (buffer == null || !buffer.hasRemaining()) {
                     // No more data currently available in buffer.
-                    // If we have already read some data, return it.
-                    // If not, try a blocking read once to wait for new data.
-                    if (batchCount == 0 && changes.isEmpty()) {
-                        try {
-                            // Blocking read with timeout: wait for the next message
-                            Method readMethod = replicationStream.getClass().getMethod("read");
-                            buffer = (ByteBuffer) readMethod.invoke(replicationStream);
-                        } catch (java.lang.reflect.InvocationTargetException e) {
-                            // read() may throw SQLException if stream is closed/timed out
-                            if (e.getCause() instanceof SQLException) {
-                                LOG.debug("Blocking read failed: {}", e.getCause().getMessage());
-                                break;
-                            }
-                            throw e;
-                        }
-                        if (buffer == null || !buffer.hasRemaining()) {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
+                    // Return what we have so far; the caller will poll again.
+                    break;
                 }
 
                 batchCount++;
