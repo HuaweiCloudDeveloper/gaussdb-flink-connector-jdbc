@@ -3,24 +3,8 @@
   <p align="center">基于 SourceFunction API 的 GaussDB CDC 连接器，兼容 Flink 1.13~1.17</p>
 </p>
 
-## 与 `flink-connector-gaussdb-cdc-1.17` 的区别
-
-| 特性 | `flink-connector-gaussdb-cdc` (本模块) | `flink-connector-gaussdb-cdc-1.17` |
-|------|--------------------------------------|-----------------------------------|
-| Flink 兼容范围 | **1.13, 1.14, 1.15, 1.16, 1.17** | 仅 1.17.x |
-| Source API | `RichSourceFunction` + `CheckpointedFunction` (Flink 1.0+) | FLIP-27 `Source` + `SourceReader` + `SplitEnumerator` (Flink 1.12+) |
-| TableSource | `SourceFunctionProvider` | `SourceProvider` |
-| 快照并行 | **支持**（按 id 范围分片，多 subtask 并行读取） | 支持（SplitEnumerator 分片） |
-| 核心功能 | 完全一致 | 完全一致 |
-
-> **选择建议**：
-> - 如需 **Flink 1.13~1.16 兼容**，使用本模块 `flink-connector-gaussdb-cdc`
-> - 如需 **快照并行读取**（大表全量阶段加速），两个模块均支持
-> - 其余场景两个模块均可，本模块兼容范围更广
-
 ## 核心功能
 
-与 `flink-connector-gaussdb-cdc-1.17` 完全一致：
 - WAL 逻辑解码（mppdb_decoding）双通道：SQL 函数模式 + 流式复制 API
 - INSERT / UPDATE / DELETE 变更捕获
 - 全量快照 → 增量流式自动衔接
@@ -28,7 +12,28 @@
 - **并行快照**：多 subtask 按 id 范围分片并行读取全量数据（设置 parallelism > 1 即可生效）
 - **WAL 单实例**：快照阶段多 subtask 并行，增量阶段仅 subtask-0 读取 WAL 变更
 
-详细功能说明请参考 [flink-connector-gaussdb-cdc-1.17/README.md](../flink-connector-gaussdb-cdc-1.17/README.md)。
+## 参数说明
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `hostname` | 必填 | GaussDB 主机地址 |
+| `port` | 8000 | 端口 |
+| `database` | 必填 | 数据库名 |
+| `schema` | `public` | Schema |
+| `table-name` | 必填 | 监控的表名 |
+| `username` | 必填 | 用户名 |
+| `password` | 必填 | 密码 |
+| `wal.mode` | `false` | `true` 启用 WAL 逻辑解码，`false` 使用轮询 |
+| `decode.plugin` | `mppdb_decoding` | 逻辑解码插件，GaussDB 需用 `mppdb_decoding` |
+| `slot.name` | `flink_cdc_slot` | 逻辑复制 slot 名 |
+| `parallel-decode-num` | `1` | 并行解码线程数（1~20）。`1` 为串行解码，**只有 >1 时 decode-style 和 sending-batch 才生效** |
+| `decode-style` | `b` | 解码输出格式：`b`=binary，`j`=json，`t`=text。**parallel-decode-num=1 时只能用 `j`** |
+| `sending-batch` | `false` | `true` 时解码结果累积到 1MB 后批量发送，减少网络交互 |
+
+> **参数依赖关系**：
+> - `parallel-decode-num > 1` 时，`decode-style`（'b'/'j'/'t'）和 `sending-batch`（true/false）才生效
+> - `parallel-decode-num = 1` 时，底层强制使用 JSON 输出，不支持 `decode-style='b'`
+> - SQL 函数模式（`pg_logical_slot_peek_changes`）不支持 `decode-style` 和 `sending-batch`，只有 streaming replication API 支持
 
 ## 快速开始
 
@@ -36,10 +41,7 @@
 
 ```bash
 cp flink-connector-gaussdb-cdc-4.0-SNAPSHOT.jar $FLINK_HOME/lib/
-cp flink-connector-base-<flink-version>.jar $FLINK_HOME/lib/
 ```
-
-> **注意**：`flink-connector-base` 的版本必须与 Flink 版本一致（如 Flink 1.13.6 对应 `flink-connector-base-1.13.6.jar`）。
 
 ### Flink SQL 使用
 
@@ -97,12 +99,9 @@ env.execute("GaussDB CDC Job");
 
 ## 前置条件
 
-与 `flink-connector-gaussdb-cdc-1.17` 相同：
 - `wal_level=logical`
 - 逻辑复制槽
 - 流式复制 API 需 gs_hba.conf 白名单 + enable_thread_pool=off 或 HA 端口
-
-详见 [flink-connector-gaussdb-cdc-1.17/README.md](../flink-connector-gaussdb-cdc-1.17/README.md#前置条件)。
 
 ## Maven 依赖
 
@@ -126,7 +125,7 @@ env.execute("GaussDB CDC Job");
 | 1.18+ | ⚠️ | 未验证，SourceFunction 在 1.18+ 标记为 @Deprecated 但仍可用 |
 | 2.x | ❌ | SourceFunction API 已移除 |
 
-> **说明**：Flink 从 1.18 开始推荐使用 FLIP-27 Source API，`SourceFunction` 被标记为 `@Deprecated` 但仍可运行。如需 Flink 2.x 支持，请使用 `flink-connector-gaussdb-cdc-1.17` 模块的架构并适配新版 API。
+> **说明**：Flink 从 1.18 开始推荐使用 FLIP-27 Source API，`SourceFunction` 被标记为 `@Deprecated` 但仍可运行。Flink 2.x 已移除 SourceFunction API，不兼容。
 
 ## 测试
 
@@ -155,6 +154,33 @@ mvn test -pl flink-connector-gaussdb-cdc \
 - pg_logical_slot_peek_changes SQL 函数
 - 并行快照分片读取
 - MppdbBinaryDecoder 二进制解码
+
+### 性能测试
+
+测试 `decode-style='b'` 在不同 `parallel-decode-num` 下的解码效率（真实 GaussDB 实例）：
+
+```bash
+mvn test -pl flink-connector-gaussdb-cdc \
+    -Dtest=GaussDBCDCBinaryDecodePerfITCase \
+    -Dgaussdb.test.enabled=true \
+    -Dcheckstyle.skip=true
+```
+
+**测试条件**：
+- GaussDB 实例：1.92.120.69:8000
+- 数据规模：10,000 条 INSERT
+- 解码插件：mppdb_decoding
+- 读取模式：streaming replication API
+
+**结果**：
+
+| parallel-decode-num | decode-style | 读取时间 | 吞吐量 |
+|---------------------|--------------|----------|--------|
+| 1（串行基准） | `j` (JSON) | 274 ms | ~36.5K changes/sec |
+| 4 | `b` (binary) | 302 ms | ~33.2K changes/sec |
+| 8 | `b` (binary) | 174 ms | ~57.6K changes/sec |
+
+> **说明**：`parallel-decode-num=1` 时底层强制使用 JSON，不支持 binary。8 线程 binary 相比串行 JSON 提升约 **58%**。实际收益与数据规模、网络延迟、GaussDB 实例负载有关。
 
 ## 许可证
 
