@@ -15,8 +15,8 @@
 
 > **选择建议**：
 > - 如需 **Flink 1.13~1.16 兼容**，使用本模块 `flink-connector-gaussdb-cdc`
-> - 如需 **快照并行读取**，使用 `flink-connector-gaussdb-cdc-1.17`
-> - 如果 **只需 Flink 1.17 且需要最佳性能**，使用 `flink-connector-gaussdb-cdc-1.17`
+> - 如需 **快照并行读取**（大表全量阶段加速），使用 `flink-connector-gaussdb-cdc-1.17`
+> - 其余场景两个模块均可，本模块兼容范围更广
 
 ## 核心功能
 
