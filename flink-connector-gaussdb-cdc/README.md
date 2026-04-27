@@ -10,12 +10,12 @@
 | Flink 兼容范围 | **1.13, 1.14, 1.15, 1.16, 1.17** | 仅 1.17.x |
 | Source API | `RichSourceFunction` + `CheckpointedFunction` (Flink 1.0+) | FLIP-27 `Source` + `SourceReader` + `SplitEnumerator` (Flink 1.12+) |
 | TableSource | `SourceFunctionProvider` | `SourceProvider` |
-| 快照并行 | 不支持（单线程快照） | 支持（SplitEnumerator 分片） |
+| 快照并行 | **支持**（按 id 范围分片，多 subtask 并行读取） | 支持（SplitEnumerator 分片） |
 | 核心功能 | 完全一致 | 完全一致 |
 
 > **选择建议**：
 > - 如需 **Flink 1.13~1.16 兼容**，使用本模块 `flink-connector-gaussdb-cdc`
-> - 如需 **快照并行读取**（大表全量阶段加速），使用 `flink-connector-gaussdb-cdc-1.17`
+> - 如需 **快照并行读取**（大表全量阶段加速），两个模块均支持
 > - 其余场景两个模块均可，本模块兼容范围更广
 
 ## 核心功能
@@ -25,6 +25,8 @@
 - INSERT / UPDATE / DELETE 变更捕获
 - 全量快照 → 增量流式自动衔接
 - 并行解码参数（parallel-decode-num, decode-style, sending-batch）
+- **并行快照**：多 subtask 按 id 范围分片并行读取全量数据（设置 parallelism > 1 即可生效）
+- **WAL 单实例**：快照阶段多 subtask 并行，增量阶段仅 subtask-0 读取 WAL 变更
 
 详细功能说明请参考 [flink-connector-gaussdb-cdc-1.17/README.md](../flink-connector-gaussdb-cdc-1.17/README.md)。
 
@@ -125,6 +127,34 @@ env.execute("GaussDB CDC Job");
 | 2.x | ❌ | SourceFunction API 已移除 |
 
 > **说明**：Flink 从 1.18 开始推荐使用 FLIP-27 Source API，`SourceFunction` 被标记为 `@Deprecated` 但仍可运行。如需 Flink 2.x 支持，请使用 `flink-connector-gaussdb-cdc-1.17` 模块的架构并适配新版 API。
+
+## 测试
+
+### 单元测试
+
+```bash
+mvn test -pl flink-connector-gaussdb-cdc -Dcheckstyle.skip=true
+```
+
+当前覆盖率：213 个测试，行覆盖率 83%。
+
+### 集成测试（需真实 GaussDB 实例）
+
+```bash
+mvn test -pl flink-connector-gaussdb-cdc \
+    -Dtest=GaussDBCDCSourceFunctionITCase \
+    -Dgaussdb.test.enabled=true \
+    -Dcheckstyle.skip=true
+```
+
+集成测试验证项：
+- JDBC 连接和驱动加载
+- 逻辑复制 slot 创建和管理
+- WalReplicationStream 流式变更捕获
+- LSN 函数兼容性（pg_current_xlog_location）
+- pg_logical_slot_peek_changes SQL 函数
+- 并行快照分片读取
+- MppdbBinaryDecoder 二进制解码
 
 ## 许可证
 

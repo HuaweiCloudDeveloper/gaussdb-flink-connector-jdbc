@@ -23,10 +23,11 @@ import org.apache.flink.annotation.Internal;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Represents a single change from the WAL (Write-Ahead Log). */
+/** Represents a single change from the WAL (Write-Ahead Log) of GaussDB. */
 @Internal
 public class WalChange {
 
+    /** Type of WAL change event. */
     public enum ChangeType {
         INSERT,
         UPDATE,

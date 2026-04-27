@@ -188,31 +188,112 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         }
 
         // Phase 2: Streaming - continuously capture changes
+        // Only subtask-0 reads WAL changes; other subtasks finish after snapshot
         if (walMode) {
-            runWalStreaming(ctx);
+            if (getRuntimeContext().getIndexOfThisSubtask() == 0) {
+                runWalStreaming(ctx);
+            } else {
+                LOG.info(
+                        "Subtask {} finished snapshot, WAL streaming handled by subtask 0",
+                        getRuntimeContext().getIndexOfThisSubtask());
+            }
         } else {
             runPollingStreaming(ctx);
         }
     }
 
-    /** Phase 1: Read initial snapshot via JDBC SELECT. */
+    /** Phase 1: Read initial snapshot via JDBC SELECT with parallel split support. */
     private void readSnapshot(SourceContext<RowData> ctx) throws SQLException {
+        int subtaskIndex = getRuntimeContext().getIndexOfThisSubtask();
+        int numSubtasks = getRuntimeContext().getNumberOfParallelSubtasks();
         String columns = getTableColumns();
-        String sql = String.format("SELECT %s FROM %s.%s ORDER BY id", columns, schema, tableName);
 
-        int count = 0;
+        if (numSubtasks > 1) {
+            // Parallel snapshot: each subtask reads a different id range
+            long[] range = getIdRange();
+            long minId = range[0];
+            long maxId = range[1];
+            long totalRange = maxId - minId + 1;
+            long chunkSize = totalRange / numSubtasks;
+
+            long startId = minId + (long) subtaskIndex * chunkSize;
+            long endId;
+            if (subtaskIndex == numSubtasks - 1) {
+                endId = maxId;
+            } else {
+                endId = minId + (long) (subtaskIndex + 1) * chunkSize - 1;
+            }
+
+            LOG.info(
+                    "Parallel snapshot: subtask {}/{}, id range [{}, {}]",
+                    subtaskIndex,
+                    numSubtasks,
+                    startId,
+                    endId);
+
+            String sql =
+                    String.format(
+                            "SELECT %s FROM %s.%s WHERE id >= ? AND id <= ? ORDER BY id",
+                            columns, schema, tableName);
+
+            int count = 0;
+            try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+                stmt.setLong(1, startId);
+                stmt.setLong(2, endId);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    ResultSetMetaData meta = rs.getMetaData();
+                    while (rs.next()) {
+                        RowData row = convertToRowDataDynamic(rs, meta);
+                        synchronized (ctx.getCheckpointLock()) {
+                            ctx.collect(row);
+                        }
+                        count++;
+                    }
+                }
+            }
+            LOG.info(
+                    "Parallel snapshot subtask {} completed: {} rows from {}.{}",
+                    subtaskIndex,
+                    count,
+                    schema,
+                    tableName);
+        } else {
+            // Single subtask: read all data
+            String sql =
+                    String.format("SELECT %s FROM %s.%s ORDER BY id", columns, schema, tableName);
+
+            int count = 0;
+            try (PreparedStatement stmt = connection.prepareStatement(sql);
+                    ResultSet rs = stmt.executeQuery()) {
+                ResultSetMetaData meta = rs.getMetaData();
+                while (rs.next()) {
+                    RowData row = convertToRowDataDynamic(rs, meta);
+                    synchronized (ctx.getCheckpointLock()) {
+                        ctx.collect(row);
+                    }
+                    count++;
+                }
+            }
+            LOG.info("Snapshot read {} rows from {}.{}", count, schema, tableName);
+        }
+    }
+
+    /** Get the min and max id of the table for parallel split calculation. */
+    private long[] getIdRange() throws SQLException {
+        String sql = String.format("SELECT MIN(id), MAX(id) FROM %s.%s", schema, tableName);
         try (PreparedStatement stmt = connection.prepareStatement(sql);
                 ResultSet rs = stmt.executeQuery()) {
-            ResultSetMetaData meta = rs.getMetaData();
-            while (rs.next()) {
-                RowData row = convertToRowDataDynamic(rs, meta);
-                synchronized (ctx.getCheckpointLock()) {
-                    ctx.collect(row);
+            if (rs.next()) {
+                long minId = rs.getLong(1);
+                long maxId = rs.getLong(2);
+                if (rs.wasNull()) {
+                    // Empty table
+                    return new long[] {0, -1};
                 }
-                count++;
+                return new long[] {minId, maxId};
             }
         }
-        LOG.info("Snapshot read {} rows from {}.{}", count, schema, tableName);
+        return new long[] {0, -1};
     }
 
     /** Phase 2a: WAL streaming using WalReplicationStream. */
