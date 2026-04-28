@@ -10,7 +10,7 @@
         <version>4.0-SNAPSHOT</version>
     </parent>
 
-    <artifactId>flink-connector-gaussdb-cdc</artifactId>
+    <artifactId>flink-connector-gaussdb-cdc-2.4.x</artifactId>
     <name>Flink : Connectors : GaussDB CDC : 1.13+</name>
     <packaging>jar</packaging>
 

@@ -40,7 +40,7 @@
 ### 部署 JAR 包
 
 ```bash
-cp flink-connector-gaussdb-cdc-4.0-SNAPSHOT.jar $FLINK_HOME/lib/
+cp flink-connector-gaussdb-cdc-2.4.x-4.0-SNAPSHOT.jar $FLINK_HOME/lib/
 ```
 
 ### Flink SQL 使用
@@ -108,7 +108,7 @@ env.execute("GaussDB CDC Job");
 ```xml
 <dependency>
     <groupId>com.huaweicloud.gaussdb.flink</groupId>
-    <artifactId>flink-connector-gaussdb-cdc</artifactId>
+    <artifactId>flink-connector-gaussdb-cdc-2.4.x</artifactId>
     <version>4.0-SNAPSHOT</version>
 </dependency>
 ```
@@ -132,7 +132,7 @@ env.execute("GaussDB CDC Job");
 ### 单元测试
 
 ```bash
-mvn test -pl flink-connector-gaussdb-cdc -Dcheckstyle.skip=true
+mvn test -pl flink-connector-gaussdb-cdc-2.4.x -Dcheckstyle.skip=true
 ```
 
 当前覆盖率：213 个测试，行覆盖率 83%。
@@ -140,7 +140,7 @@ mvn test -pl flink-connector-gaussdb-cdc -Dcheckstyle.skip=true
 ### 集成测试（需真实 GaussDB 实例）
 
 ```bash
-mvn test -pl flink-connector-gaussdb-cdc \
+mvn test -pl flink-connector-gaussdb-cdc-2.4.x \
     -Dtest=GaussDBCDCSourceFunctionITCase \
     -Dgaussdb.test.enabled=true \
     -Dcheckstyle.skip=true
@@ -160,7 +160,7 @@ mvn test -pl flink-connector-gaussdb-cdc \
 测试 `decode-style='b'` 在不同 `parallel-decode-num` 下的解码效率（真实 GaussDB 实例）：
 
 ```bash
-mvn test -pl flink-connector-gaussdb-cdc \
+mvn test -pl flink-connector-gaussdb-cdc-2.4.x \
     -Dtest=GaussDBCDCBinaryDecodePerfITCase \
     -Dgaussdb.test.enabled=true \
     -Dcheckstyle.skip=true
