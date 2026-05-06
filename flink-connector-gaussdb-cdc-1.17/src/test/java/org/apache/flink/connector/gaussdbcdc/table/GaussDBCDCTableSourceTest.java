@@ -75,6 +75,7 @@ class GaussDBCDCTableSourceTest {
                 1,
                 "b",
                 false,
+                "prefer",
                 DataTypes.STRING());
     }
 }

@@ -151,5 +151,14 @@ public class GaussDBCDCOptions {
                                     + "When false (default), uses polling-based CDC. "
                                     + "When true, uses WAL logical replication stream.");
 
+    public static final ConfigOption<String> SSL_MODE =
+            ConfigOptions.key("sslmode")
+                    .stringType()
+                    .defaultValue("prefer")
+                    .withDescription(
+                            "SSL mode for GaussDB connections. "
+                                    + "Supported values: disable, allow, prefer (default), require, verify-ca, verify-full. "
+                                    + "See GaussDB JDBC driver documentation for details.");
+
     private GaussDBCDCOptions() {}
 }

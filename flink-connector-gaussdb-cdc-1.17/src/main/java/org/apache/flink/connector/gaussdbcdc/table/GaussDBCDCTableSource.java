@@ -45,6 +45,7 @@ public class GaussDBCDCTableSource implements ScanTableSource {
     private final int parallelDecodeNum;
     private final String decodeStyle;
     private final boolean sendingBatch;
+    private final String sslMode;
     private final DataType physicalRowDataType;
 
     public GaussDBCDCTableSource(
@@ -63,6 +64,7 @@ public class GaussDBCDCTableSource implements ScanTableSource {
             int parallelDecodeNum,
             String decodeStyle,
             boolean sendingBatch,
+            String sslMode,
             DataType physicalRowDataType) {
         this.hostname = hostname;
         this.port = port;
@@ -79,6 +81,7 @@ public class GaussDBCDCTableSource implements ScanTableSource {
         this.parallelDecodeNum = parallelDecodeNum;
         this.decodeStyle = decodeStyle;
         this.sendingBatch = sendingBatch;
+        this.sslMode = sslMode;
         this.physicalRowDataType = physicalRowDataType;
     }
 
@@ -107,6 +110,7 @@ public class GaussDBCDCTableSource implements ScanTableSource {
                         .parallelDecodeNum(parallelDecodeNum)
                         .decodeStyle(decodeStyle)
                         .sendingBatch(sendingBatch)
+                        .sslMode(sslMode)
                         .build();
 
         return SourceProvider.of(source);
@@ -130,6 +134,7 @@ public class GaussDBCDCTableSource implements ScanTableSource {
                 parallelDecodeNum,
                 decodeStyle,
                 sendingBatch,
+                sslMode,
                 physicalRowDataType);
     }
 

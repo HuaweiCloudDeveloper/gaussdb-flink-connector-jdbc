@@ -76,6 +76,7 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
     private final int parallelDecodeNum;
     private final String decodeStyle;
     private final boolean sendingBatch;
+    private final String sslMode;
 
     private Connection connection;
     private GaussDBSplit currentSplit;
@@ -108,7 +109,8 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
             String decodePlugin,
             int parallelDecodeNum,
             String decodeStyle,
-            boolean sendingBatch) {
+            boolean sendingBatch,
+            String sslMode) {
         this.context = context;
         this.hostname = hostname;
         this.port = port;
@@ -125,6 +127,7 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
         this.parallelDecodeNum = parallelDecodeNum;
         this.decodeStyle = decodeStyle;
         this.sendingBatch = sendingBatch;
+        this.sslMode = sslMode;
     }
 
     @Override
@@ -136,8 +139,8 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
             // Create connection
             String url =
                     String.format(
-                            "jdbc:gaussdb://%s:%d/%s?compatibleMode=mysql",
-                            hostname, port, database);
+                            "jdbc:gaussdb://%s:%d/%s?compatibleMode=mysql&sslmode=%s",
+                            hostname, port, database, sslMode);
             this.connection = DriverManager.getConnection(url, username, password);
 
             // Initialize CDC mode based on walMode setting

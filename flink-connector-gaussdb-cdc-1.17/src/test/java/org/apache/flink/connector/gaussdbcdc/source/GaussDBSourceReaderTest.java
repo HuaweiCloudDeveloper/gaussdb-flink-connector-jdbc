@@ -79,7 +79,8 @@ class GaussDBSourceReaderTest {
                         "mppdb_decoding",
                         1,
                         "b",
-                        false);
+                        false,
+                        "prefer");
     }
 
     @Test
@@ -661,7 +662,8 @@ class GaussDBSourceReaderTest {
                         "mppdb_decoding",
                         4,
                         "b",
-                        false);
+                        false,
+                        "prefer");
 
         // Test convertWalColumnsToRowData via reflection
         java.lang.reflect.Method method =
@@ -710,7 +712,8 @@ class GaussDBSourceReaderTest {
                         "mppdb_decoding",
                         4,
                         "b",
-                        false);
+                        false,
+                        "prefer");
 
         java.lang.reflect.Method method =
                 GaussDBSourceReader.class.getDeclaredMethod(
@@ -754,7 +757,8 @@ class GaussDBSourceReaderTest {
                         "mppdb_decoding",
                         4,
                         "b",
-                        false);
+                        false,
+                        "prefer");
 
         java.lang.reflect.Method method =
                 GaussDBSourceReader.class.getDeclaredMethod(
@@ -806,7 +810,8 @@ class GaussDBSourceReaderTest {
                         "mppdb_decoding",
                         4,
                         "b",
-                        true);
+                        true,
+                        "prefer");
         assertThat(walReader).isNotNull();
     }
 
@@ -829,7 +834,8 @@ class GaussDBSourceReaderTest {
                         "mppdb_decoding",
                         4,
                         "b",
-                        false);
+                        false,
+                        "prefer");
 
         // Set a mock WalReplicationStream
         Connection conn = mock(Connection.class);

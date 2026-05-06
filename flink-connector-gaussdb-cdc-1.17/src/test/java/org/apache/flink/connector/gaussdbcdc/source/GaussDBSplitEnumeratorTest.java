@@ -52,7 +52,8 @@ class GaussDBSplitEnumeratorTest {
                         "password",
                         false,
                         1000,
-                        30000);
+                        30000,
+                        "prefer");
         assertThat(enumerator).isNotNull();
     }
 
@@ -78,7 +79,8 @@ class GaussDBSplitEnumeratorTest {
                         "password",
                         false,
                         1000,
-                        30000);
+                        30000,
+                        "prefer");
         assertThat(enumerator).isNotNull();
     }
 
@@ -99,7 +101,8 @@ class GaussDBSplitEnumeratorTest {
                         "password",
                         false,
                         1000,
-                        30000);
+                        30000,
+                        "prefer");
         assertThat(enumerator).isNotNull();
     }
 
@@ -119,7 +122,8 @@ class GaussDBSplitEnumeratorTest {
                         "password",
                         false,
                         1000,
-                        30000);
+                        30000,
+                        "prefer");
         enumerator.close();
     }
 
@@ -139,7 +143,8 @@ class GaussDBSplitEnumeratorTest {
                         "password",
                         false,
                         1000,
-                        30000);
+                        30000,
+                        "prefer");
 
         GaussDBSplit split1 = new GaussDBSplit("snapshot-1", "test_table", 101L, 200L);
         GaussDBSplit split2 = new GaussDBSplit("snapshot-0", "test_table", 1L, 100L);
@@ -168,7 +173,8 @@ class GaussDBSplitEnumeratorTest {
                         "password",
                         false,
                         1000,
-                        30000);
+                        30000,
+                        "prefer");
         enumerator.handleSourceEvent(0, null);
     }
 
@@ -188,7 +194,8 @@ class GaussDBSplitEnumeratorTest {
                         "password",
                         false,
                         1000,
-                        30000);
+                        30000,
+                        "prefer");
         // Start the enumerator (creates stream split)
         enumerator.start();
         // Request split when no snapshot splits, snapshotCompleted=false
@@ -213,7 +220,8 @@ class GaussDBSplitEnumeratorTest {
                         "password",
                         false,
                         1000,
-                        30000);
+                        30000,
+                        "prefer");
         enumerator.start();
         // First request: assigns stream split, sets snapshotCompleted=true
         enumerator.handleSplitRequest(0, "host");
@@ -238,7 +246,8 @@ class GaussDBSplitEnumeratorTest {
                         "password",
                         false,
                         1000,
-                        30000);
+                        30000,
+                        "prefer");
         enumerator.start();
 
         // Manually add snapshot splits via reflection
@@ -277,7 +286,8 @@ class GaussDBSplitEnumeratorTest {
                         "password",
                         false,
                         1000,
-                        30000);
+                        30000,
+                        "prefer");
         enumerator.start();
 
         // Add splits manually
@@ -311,7 +321,8 @@ class GaussDBSplitEnumeratorTest {
                         "password",
                         false,
                         1000,
-                        30000);
+                        30000,
+                        "prefer");
         enumerator.start();
 
         // Add splits and assign one
@@ -346,7 +357,8 @@ class GaussDBSplitEnumeratorTest {
                         "password",
                         true,
                         1000,
-                        30000);
+                        30000,
+                        "prefer");
         // start() will try to connect to DB and fail
         assertThatThrownBy(() -> enumerator.start())
                 .isInstanceOf(RuntimeException.class)
@@ -369,7 +381,8 @@ class GaussDBSplitEnumeratorTest {
                         "password",
                         false,
                         1000,
-                        30000);
+                        30000,
+                        "prefer");
         enumerator.start();
         // Should create stream split
         java.lang.reflect.Field streamSplitField =
@@ -396,7 +409,8 @@ class GaussDBSplitEnumeratorTest {
                         "password",
                         false,
                         1000,
-                        30000);
+                        30000,
+                        "prefer");
         enumerator.addReader(0); // Should not throw
     }
 
@@ -423,7 +437,8 @@ class GaussDBSplitEnumeratorTest {
                         "password",
                         false,
                         1000,
-                        30000);
+                        30000,
+                        "prefer");
 
         // Verify the restored splits are present
         java.lang.reflect.Field snapshotSplitsField =

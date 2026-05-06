@@ -344,6 +344,7 @@ CREATE TABLE student (
 | table-name | 是 | - | 表名 |
 | username | 是 | - | 用户名 |
 | password | 是 | - | 密码 |
+| sslmode | 否 | prefer | SSL 连接模式，支持：disable、allow、prefer（默认）、require、verify-ca、verify-full |
 
 ### CDC 专用参数
 
@@ -366,6 +367,40 @@ CREATE TABLE student (
 > **重要**：SQL 函数模式下 `decode-style` 和 `sending-batch` 不被 mppdb_decoding 识别（会报 `Option unknown` 错误），Connector 会自动跳过。
 > `parallel-decode-num` 可传入但无性能提升（82% 耗时在 JSON 文本传输，解码仅占 18%）。
 > 并行解码性能提升需启用流式复制 API 模式（需配置 gs_hba.conf 白名单）。
+
+### SSL 连接模式
+
+Connector 支持通过 `sslmode` 参数配置 SSL 加密连接，参数值会传递到 GaussDB JDBC 驱动的连接 URL 中（`?sslmode=<value>`）。
+
+| 值 | 说明 |
+|---|------|
+| disable | 不使用 SSL |
+| allow | 优先非 SSL，失败时尝试 SSL |
+| prefer | 优先 SSL，失败时回退非 SSL（**默认**） |
+| require | 必须使用 SSL，但不验证服务器证书 |
+| verify-ca | 必须使用 SSL，验证服务器证书由可信 CA 签发 |
+| verify-full | 必须使用 SSL，验证服务器证书由可信 CA 签发且 CN 匹配主机名 |
+
+使用示例：
+
+```sql
+CREATE TABLE student_cdc (
+    id INT,
+    name STRING,
+    PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+    'connector' = 'gaussdb-cdc',
+    'hostname' = 'localhost',
+    'port' = '8000',
+    'database' = 'test',
+    'table-name' = 'student',
+    'username' = 'root',
+    'password' = 'password',
+    'sslmode' = 'require'
+);
+```
+
+> **说明**：默认值 `prefer` 与 GaussDB JDBC 驱动默认行为一致，无需额外配置。如数据库要求 SSL 连接，请设置为 `require` 或更高安全级别。
 
 ### Source 专用参数
 

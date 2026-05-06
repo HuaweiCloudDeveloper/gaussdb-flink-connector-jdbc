@@ -80,6 +80,7 @@ public class GaussDBCDCSource
     private final int parallelDecodeNum;
     private final String decodeStyle;
     private final boolean sendingBatch;
+    private final String sslMode;
 
     private GaussDBCDCSource(Builder builder) {
         this.hostname = Preconditions.checkNotNull(builder.hostname, "hostname must not be null");
@@ -101,6 +102,7 @@ public class GaussDBCDCSource
         this.parallelDecodeNum = builder.parallelDecodeNum;
         this.decodeStyle = builder.decodeStyle;
         this.sendingBatch = builder.sendingBatch;
+        this.sslMode = builder.sslMode;
     }
 
     @Override
@@ -127,7 +129,8 @@ public class GaussDBCDCSource
                 decodePlugin,
                 parallelDecodeNum,
                 decodeStyle,
-                sendingBatch);
+                sendingBatch,
+                sslMode);
     }
 
     @Override
@@ -144,7 +147,8 @@ public class GaussDBCDCSource
                 password,
                 snapshotMode,
                 chunkSize,
-                connectTimeoutMs);
+                connectTimeoutMs,
+                sslMode);
     }
 
     @Override
@@ -162,7 +166,8 @@ public class GaussDBCDCSource
                 password,
                 snapshotMode,
                 chunkSize,
-                connectTimeoutMs);
+                connectTimeoutMs,
+                sslMode);
     }
 
     @Override
@@ -205,6 +210,7 @@ public class GaussDBCDCSource
         private int parallelDecodeNum = GaussDBCDCOptions.PARALLEL_DECODE_NUM.defaultValue();
         private String decodeStyle = GaussDBCDCOptions.DECODE_STYLE.defaultValue();
         private boolean sendingBatch = GaussDBCDCOptions.SENDING_BATCH.defaultValue();
+        private String sslMode = GaussDBCDCOptions.SSL_MODE.defaultValue();
 
         public Builder hostname(String hostname) {
             this.hostname = hostname;
@@ -293,6 +299,11 @@ public class GaussDBCDCSource
 
         public Builder sendingBatch(boolean sendingBatch) {
             this.sendingBatch = sendingBatch;
+            return this;
+        }
+
+        public Builder sslMode(String sslMode) {
+            this.sslMode = sslMode;
             return this;
         }
 

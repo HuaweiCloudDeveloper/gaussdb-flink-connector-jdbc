@@ -60,6 +60,7 @@ public class GaussDBSplitEnumerator implements SplitEnumerator<GaussDBSplit, Gau
     private final boolean snapshotMode;
     private final int chunkSize;
     private final int connectTimeoutMs;
+    private final String sslMode;
 
     private List<GaussDBSplit> snapshotSplits;
     private GaussDBSplit streamSplit;
@@ -78,7 +79,8 @@ public class GaussDBSplitEnumerator implements SplitEnumerator<GaussDBSplit, Gau
             String password,
             boolean snapshotMode,
             int chunkSize,
-            int connectTimeoutMs) {
+            int connectTimeoutMs,
+            String sslMode) {
         this.context = context;
         this.hostname = hostname;
         this.port = port;
@@ -90,6 +92,7 @@ public class GaussDBSplitEnumerator implements SplitEnumerator<GaussDBSplit, Gau
         this.snapshotMode = snapshotMode;
         this.chunkSize = chunkSize;
         this.connectTimeoutMs = connectTimeoutMs;
+        this.sslMode = sslMode;
         this.snapshotSplits = new ArrayList<>();
     }
 
@@ -106,7 +109,8 @@ public class GaussDBSplitEnumerator implements SplitEnumerator<GaussDBSplit, Gau
             String password,
             boolean snapshotMode,
             int chunkSize,
-            int connectTimeoutMs) {
+            int connectTimeoutMs,
+            String sslMode) {
         this(
                 context,
                 hostname,
@@ -118,7 +122,8 @@ public class GaussDBSplitEnumerator implements SplitEnumerator<GaussDBSplit, Gau
                 password,
                 snapshotMode,
                 chunkSize,
-                connectTimeoutMs);
+                connectTimeoutMs,
+                sslMode);
 
         if (checkpoint != null) {
             this.snapshotSplits = checkpoint.getUnassignedSplits();
@@ -151,7 +156,8 @@ public class GaussDBSplitEnumerator implements SplitEnumerator<GaussDBSplit, Gau
     private void createSnapshotSplits() throws SQLException {
         String url =
                 String.format(
-                        "jdbc:gaussdb://%s:%d/%s?compatibleMode=mysql", hostname, port, database);
+                        "jdbc:gaussdb://%s:%d/%s?compatibleMode=mysql&sslmode=%s",
+                        hostname, port, database, sslMode);
 
         try (Connection conn = DriverManager.getConnection(url, username, password);
                 Statement stmt = conn.createStatement()) {
