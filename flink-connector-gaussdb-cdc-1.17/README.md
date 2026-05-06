@@ -85,9 +85,9 @@ WAL 增量阶段支持两种数据通道，Connector 自动选择最优路径：
 - **CPU**: 2GHz 或更高
 - **RAM**: 4GB 或更大
 - **Disk**: 至少 40GB
-- **JDK**: 8/11（推荐）/ 17+
+- **JDK**: 8/11（推荐）
 
-> **说明**：Connector 内置的 GaussDB JDBC 驱动（`gaussdbjdbc-506.0.0.b058-jdk7`）兼容 JDK 8/11，流式复制 API 同样可用（PGReplicationStream 编译版本为 JDK 8）。
+> **说明**：Connector 编译目标为 JDK 8（class file version 52），内置的 GaussDB JDBC 驱动（`gaussdbjdbc-506.0.0.b058-jdk7`）同样兼容 JDK 8+，流式复制 API 可用（PGReplicationStream 编译版本为 JDK 8）。已在 JDK 8（Zulu 1.8.0_482）环境下验证通过。
 
 ### 数据库要求
 

@@ -66,8 +66,9 @@ Flink GaussDB JDBC Connector 1.17 是专为 Apache Flink 1.17 版本设计的 Ga
 ### 依赖 JAR 包
 将以下 JAR 包放置到 Flink 安装目录的 `lib/` 文件夹下：
 
-1. **Flink Connector Base** (必选)
+1. **Flink Connector Base** (Flink 运行时已内置，通常无需手动放置)
    - `flink-connector-base-1.17.2.jar`
+   - 该包为 Flink 框架的 `provided` 依赖，由 Flink 类加载器在运行时自动加载；仅在极少数自定义部署环境中缺失时才需手动放入 `lib/`
 
 2. **Flink JDBC Connector** (必选)
    - `flink-connector-jdbc-3.1.2-1.17.jar`
@@ -82,7 +83,9 @@ Flink GaussDB JDBC Connector 1.17 是专为 Apache Flink 1.17 版本设计的 Ga
 本 JAR 包已排除 `flink-connector-base` 和 `flink-connector-jdbc` 依赖，避免与 MRS 自带的包冲突。
 
 **MRS 环境要求**：
-- MRS 集群必须已安装 `flink-connector-base` 和 `flink-connector-jdbc` 组件
+- MRS 集群必须已安装 `flink-connector-base` 和 `flink-connector-jdbc` 组件（MRS 管理界面中勾选安装即可）
+- `flink-connector-base` 为 Flink 框架 `provided` 依赖，由 MRS 的 Flink 运行时自动加载
+- `flink-connector-jdbc` 为 JDBC 连接器基础包，MRS 安装后自动放入 `lib/` 目录
 - 只需将 `flink-connector-jdbc-gaussdb-1.17-4.0-SNAPSHOT.jar` 放入 MRS 的 lib 目录（已内置 GaussDB JDBC 驱动）
 
 ### Maven 依赖
