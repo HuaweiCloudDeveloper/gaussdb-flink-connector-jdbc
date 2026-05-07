@@ -156,8 +156,9 @@ public class GaussDBSplitEnumerator implements SplitEnumerator<GaussDBSplit, Gau
     private void createSnapshotSplits() throws SQLException {
         String url =
                 String.format(
-                        "jdbc:gaussdb://%s:%d/%s?compatibleMode=mysql&sslmode=%s",
-                        hostname, port, database, sslMode);
+                        "jdbc:gaussdb://%s:%d/%s?sslmode=%s", hostname, port, database, sslMode);
+
+        LOG.info("Connecting to GaussDB for snapshot splits: {}", url);
 
         try (Connection conn = DriverManager.getConnection(url, username, password);
                 Statement stmt = conn.createStatement()) {

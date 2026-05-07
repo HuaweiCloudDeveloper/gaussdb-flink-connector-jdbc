@@ -139,8 +139,9 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
             // Create connection
             String url =
                     String.format(
-                            "jdbc:gaussdb://%s:%d/%s?compatibleMode=mysql&sslmode=%s",
+                            "jdbc:gaussdb://%s:%d/%s?sslmode=%s",
                             hostname, port, database, sslMode);
+            LOG.info("Connecting to GaussDB SourceReader: {}", url);
             this.connection = DriverManager.getConnection(url, username, password);
 
             // Initialize CDC mode based on walMode setting
@@ -176,7 +177,8 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
                     database,
                     tableName);
         } catch (Exception e) {
-            throw new RuntimeException("Failed to connect to GaussDB", e);
+            LOG.error("Failed to connect to GaussDB at {}:{}/{}", hostname, port, database, e);
+            throw new RuntimeException("Failed to connect to GaussDB: " + e.getMessage(), e);
         }
     }
 

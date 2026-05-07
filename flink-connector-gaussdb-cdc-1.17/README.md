@@ -109,7 +109,7 @@ GaussDB 的流式复制连接（`replication=database`）需要额外的访问�
 1. **gs_hba.conf 白名单**：需添加 replication 类型的访问规则
    ```
    # 在 gs_hba.conf 中添加（需运维操作，不支持 SQL 修改）
-   host    replication    root    <客户端IP>/32    md5
+   host    replication    root    <客户端IP>/32    sha256
    ```
 2. **enable_thread_pool**：当 `enable_thread_pool=on`（集中式默认）时，复制连接需走 HA 端口（数据端口+1，如 8001）。如需走数据端口 8000，需关闭该参数（需重启实例）
 
@@ -541,7 +541,7 @@ CREATE TABLE student_cdc (
    ```
 
 5. **流式复制 API 环境配置**：Connector 内置的 `gaussdbjdbc-506.0.0.b058-jdk7` 驱动已包含 `PGReplicationStream`（编译版本 JDK 8），JDK 11 即可使用流式复制 API。但流式复制连接（`replication=database`）需要：
-   - **gs_hba.conf 白名单**：添加 `host replication <user> <IP>/32 md5`（需运维操作，不支持 SQL 修改）
+   - **gs_hba.conf 白名单**：添加 `host replication <user> <IP>/32 sha256`（需运维操作，不支持 SQL 修改）
    - **enable_thread_pool**：集中式默认 `on`，此时复制连接需走 HA 端口（数据端口+1，如 8001）。若 HA 端口不可达，需关闭 `enable_thread_pool`（postmaster 级参数，需重启实例）
    - 如无法完成以上配置，Connector 自动回退到 SQL 函数模式
 
@@ -628,7 +628,7 @@ A: GaussDB 的 `gs_hba.conf` 访问控制文件中没有允许 replication 类�
 
 解决方案：需联系运维在 `gs_hba.conf` 中添加白名单规则（不支持 SQL 修改）：
 ```
-host    replication    root    <客户端IP>/32    md5
+host    replication    root    <客户端IP>/32    sha256
 ```
 
 ### Q: SQL 函数模式下并行解码为什么没有性能提升？
