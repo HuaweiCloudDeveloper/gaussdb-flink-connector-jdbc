@@ -662,6 +662,30 @@ A: 可以通过 Flink 监控查看：
 SHOW CREATE TABLE student_cdc;
 ```
 
+### Q: 如何更换 GaussDB JDBC 驱动版本？
+
+A: 修改模块 `pom.xml` 中的驱动版本属性，然后重新打包即可：
+
+1. 修改版本号（当前版本为 `506.0.0.b058-jdk7`）：
+```xml
+<!-- flink-connector-gaussdb-cdc-1.17/pom.xml 第19行 -->
+<gaussdb.jdbc.version>506.0.0.b058-jdk7</gaussdb.jdbc.version>
+<!-- 改为目标版本，例如 -->
+<gaussdb.jdbc.version>505.2.1.SPC0800</gaussdb.jdbc.version>
+```
+
+2. 重新打包并部署：
+```bash
+mvn clean package -pl flink-connector-gaussdb-cdc-1.17 -DskipTests -Dcheckstyle.skip=true
+cp flink-connector-gaussdb-cdc-1.17/target/flink-connector-gaussdb-cdc-1.17-4.0-SNAPSHOT.jar $FLINK_HOME/lib/
+# 重启 Flink 集群
+```
+
+**注意事项：**
+- 如目标版本不在 Maven 中央仓库，需先通过 `mvn install:install-file` 安装到本地仓库，或配置私有仓库地址
+- 确认新驱动的 JDBC 驱动类名是否仍为 `com.huawei.gaussdb.jdbc.Driver`
+- 注意 JDK 兼容性：`jdk7` 后缀表示编译目标为 JDK 7，Flink 1.17 运行在 JDK 11，需确认新驱动在 JDK 11 下可正常工作
+
 ## 许可证
 
 本项目基于 Apache License 2.0 开源许可证。
