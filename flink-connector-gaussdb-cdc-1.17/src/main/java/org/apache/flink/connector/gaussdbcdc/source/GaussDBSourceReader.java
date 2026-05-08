@@ -216,6 +216,12 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
             return InputStatus.MORE_AVAILABLE;
         }
 
+        if (currentSplit == null && snapshotFinished) {
+            // Snapshot finished but no stream split assigned yet,
+            // still poll for incremental changes
+            return pollChanges(output);
+        }
+
         if (currentSplit == null) {
             // No split assigned and snapshot finished
             return InputStatus.NOTHING_AVAILABLE;

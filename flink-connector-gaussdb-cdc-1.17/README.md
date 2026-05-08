@@ -307,7 +307,7 @@ CREATE TABLE student_target (
     PRIMARY KEY (id) NOT ENFORCED
 ) WITH (
     'connector' = 'jdbc',
-    'url' = 'jdbc:gaussdb://localhost:8000/test?compatibleMode=mysql',
+    'url' = 'jdbc:gaussdb://localhost:8000/test?sslmode=disable',
     'table-name' = 'student_backup',
     'username' = 'root',
     'password' = 'password',
