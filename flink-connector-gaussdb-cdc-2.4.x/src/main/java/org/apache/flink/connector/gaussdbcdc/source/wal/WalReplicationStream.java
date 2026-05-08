@@ -311,34 +311,78 @@ public class WalReplicationStream {
                 return changes;
             }
 
-            // Read pending changes: stream.readPending()
-            // Loop to read all available batches, then force status update
-            // to allow server to send more data
+            LOG.debug(
+                    "Replication stream alive, useReplicationApi={}, lastLsn={}",
+                    useReplicationApi,
+                    lastLsn);
+
+            // Read changes using readPending() (non-blocking).
+            // If readPending() returns null, the caller will sleep and retry.
             Method readPendingMethod = replicationStream.getClass().getMethod("readPending");
             Method forceUpdateStatusMethod =
                     replicationStream.getClass().getMethod("forceUpdateStatus");
 
             int batchCount = 0;
             while (changes.size() < maxChanges) {
+                // Force status update before reading to trigger server to send data.
+                if (batchCount == 0) {
+                    forceUpdateStatusMethod.invoke(replicationStream);
+                    // Brief pause after forceUpdateStatus to allow the server to push data.
+                    // Without this, readPending() may return null on the very first call
+                    // before the server has had time to respond to the status update.
+                    try {
+                        Thread.sleep(50);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+
                 ByteBuffer buffer = (ByteBuffer) readPendingMethod.invoke(replicationStream);
                 if (buffer == null || !buffer.hasRemaining()) {
                     // No more data currently available in buffer.
-                    // Return what we have so far; the caller will poll again.
-                    break;
+                    // If this is the very first read attempt and we got nothing,
+                    // try once more after a short wait - the replication stream
+                    // may need a moment to deliver the first batch.
+                    if (batchCount == 0) {
+                        try {
+                            Thread.sleep(100);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                        forceUpdateStatusMethod.invoke(replicationStream);
+                        buffer = (ByteBuffer) readPendingMethod.invoke(replicationStream);
+                        if (buffer == null || !buffer.hasRemaining()) {
+                            break;
+                        }
+                    } else {
+                        // Return what we have so far; the caller will poll again.
+                        break;
+                    }
                 }
 
                 batchCount++;
                 byte[] data = new byte[buffer.remaining()];
                 buffer.get(data);
 
-                // Decode the batch based on decode-style
+                // Decode the batch based on the actual output format.
+                // When parallelDecodeNum > 1, mppdb_decoding outputs in the format
+                // specified by decode-style (b=binary, j=json, t=text).
+                // When parallelDecodeNum == 1 (serial decoding), mppdb_decoding
+                // outputs text format for BEGIN/COMMIT and JSON for data changes.
+                // Since we don't pass decode-style to the slot in serial mode,
+                // we must NOT use the binary decoder regardless of the decodeStyle
+                // config value.
                 List<WalChange> batchChanges;
-                if ("b".equals(decodeStyle)) {
+                if (parallelDecodeNum > 1 && "b".equals(decodeStyle)) {
                     // Binary format: use MppdbBinaryDecoder
                     batchChanges = binaryDecoder.decodeBatch(data);
                 } else {
-                    // JSON format (j) or text (t): parse as newline-separated JSON events
-                    batchChanges = parseJsonBatch(data);
+                    // JSON/text format: parse each record individually.
+                    // mppdb_decoding serial mode outputs one record per readPending()
+                    // call (BEGIN, COMMIT as text; INSERT/UPDATE/DELETE as JSON).
+                    batchChanges = parseReplicationRecord(data);
                 }
 
                 changes.addAll(batchChanges);
@@ -431,6 +475,44 @@ public class WalReplicationStream {
         } catch (Exception e) {
             LOG.debug("Could not update flushed LSN: {}", e.getMessage());
         }
+    }
+
+    /**
+     * Parse a single replication record from mppdb_decoding output.
+     *
+     * <p>In serial mode (parallelDecodeNum=1), mppdb_decoding outputs one record per readPending()
+     * call. The format is mixed:
+     *
+     * <ul>
+     *   <li>BEGIN/COMMIT: plain text, e.g. "BEGIN 332556" or "COMMIT 332556 CSN 147390"
+     *   <li>Data changes (INSERT/UPDATE/DELETE): JSON, e.g.
+     *       {"table_name":"public.t","op_type":"INSERT","columns_name":[...],...}
+     * </ul>
+     *
+     * <p>This method detects the format and delegates to the appropriate parser.
+     *
+     * @param data raw bytes from readPending()
+     * @return list of parsed WalChange records (usually 1, may be empty for non-data records)
+     */
+    private List<WalChange> parseReplicationRecord(byte[] data) {
+        List<WalChange> changes = new ArrayList<>();
+        if (data == null || data.length == 0) {
+            return changes;
+        }
+
+        String text = new String(data, java.nio.charset.StandardCharsets.UTF_8).trim();
+        if (text.isEmpty()) {
+            return changes;
+        }
+
+        // Delegate to parseChangeData which handles all formats:
+        // BEGIN, COMMIT (text), JSON objects ({...}), and text-style changes (INSERT: ...)
+        WalChange change = parseChangeData(lastLsn, 0, text);
+        if (change != null) {
+            changes.add(change);
+        }
+
+        return changes;
     }
 
     /**

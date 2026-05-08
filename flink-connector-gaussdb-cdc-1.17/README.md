@@ -647,6 +647,14 @@ A: 这两个参数仅在使用 GaussDB 流式复制 API 模式时有效。SQL �
 1. gs_hba.conf 配置了 replication 白名单
 2. enable_thread_pool=off 或 HA 端口（数据端口+1）可达
 
+### Q: 并行解码 binary 模式增量同步不工作？
+
+A: 已修复。`MppdbBinaryDecoder` 存在偏移计算 bug：mppdb_decoding 的 binary 格式中每条记录后有一个 1 字节分隔符（'P'=更多记录，'F'=batch结束），但 `totalSize` 字段不包含此分隔符。修复后正确处理分隔符，binary 模式增量同步已恢复正常。
+
+### Q: 串行解码（parallel-decode-num=1）增量同步不工作？
+
+A: 已修复。`parallel-decode-num=1` 时 `buildSlotOptions()` 不传 `decode-style` 给 slot，mppdb_decoding 默认输出 JSON 格式，但代码误用 `MppdbBinaryDecoder` 解码。修复后串行模式走 JSON 解析，增量同步已恢复正常。
+
 ### Q: CDC 会影响数据库性能吗？
 
 A:

@@ -102,6 +102,18 @@ env.execute("GaussDB CDC Job");
 - `wal_level=logical`
 - 逻辑复制槽
 - 流式复制 API 需 gs_hba.conf 白名单 + enable_thread_pool=off 或 HA 端口
+- `parallel-decode-num=1` 时底层输出 JSON 格式（不支持 `decode-style='b'`），`decode-style` 和 `sending-batch` 仅在 `parallel-decode-num > 1` 时生效
+
+## 已知问题与修复记录
+
+| 问题 | 根因 | 修复 | 影响 |
+|------|------|------|------|
+| 串行解码 readPending 返回 0 条变更 | `parallel-decode-num=1` 时不传 `decode-style`，mppdb_decoding 默认输出 JSON，但代码用 MppdbBinaryDecoder 解码 | 判断条件改为 `parallelDecodeNum > 1 && "b".equals(decodeStyle)` 才走 binary 解码，否则走 JSON 解析 | 串行模式增量同步恢复 |
+| MppdbBinaryDecoder 偏移错位 | binary 格式每条记录后有 1 字节分隔符（'P'/'F'），totalSize 不含该字节 | bodyEndPos 位置检查分隔符，有则 nextRecordPos = bodyEndPos + 1 | 并行解码 binary 模式增量同步恢复 |
+| readPending 首次返回 null | forceUpdateStatus 后服务器需时间推送数据，首次调用返回 null 后直接 break | 首次 null 时等 100ms 重试一次 + forceUpdateStatus 后等 50ms | 首次读取不再丢失数据 |
+| compatibleMode=mysql 导致连接关闭 | GaussDB 流式复制不支持 MySQL 兼容模式 | 移除 compatibleMode=mysql，改为 sslmode=disable | 流式复制连接不再被服务端关闭 |
+| transient running 反序列化后为 false | Java transient 字段不保留初始值 | open() 中显式设置 this.running = true | WAL streaming loop 不再跳过 |
+| 增量同步捕获其他表变更 | WAL 解码捕获数据库所有表变更 | 添加目标表名过滤，跳过非目标表 | 类型转换错误不再发生 |
 
 ## Maven 依赖
 

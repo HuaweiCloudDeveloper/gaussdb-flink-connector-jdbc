@@ -139,11 +139,11 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     @Override
     public void open(Configuration parameters) throws Exception {
         super.open(parameters);
+        this.running = true; // transient field reset on deserialization, must re-initialize
         Class.forName("com.huawei.gaussdb.jdbc.Driver");
 
         String url =
-                String.format(
-                        "jdbc:gaussdb://%s:%d/%s?compatibleMode=mysql", hostname, port, database);
+                String.format("jdbc:gaussdb://%s:%d/%s?sslmode=disable", hostname, port, database);
         this.connection = DriverManager.getConnection(url, username, password);
 
         if (walMode) {
@@ -307,35 +307,83 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                     walReplicationStream.getLastLsn());
         }
 
+        LOG.info("Entering WAL streaming loop, running={}", running);
         while (running) {
-            List<WalChange> changes = walReplicationStream.readChanges(1000);
-
-            for (WalChange change : changes) {
-                if (!change.isDataChange()) {
-                    continue;
+            try {
+                List<WalChange> changes = walReplicationStream.readChanges(1000);
+                String streamLsn = walReplicationStream.getLastLsn();
+                if (!changes.isEmpty()) {
+                    LOG.info(
+                            "Read {} changes from WAL stream, running={}, lastLsn={}",
+                            changes.size(),
+                            running,
+                            streamLsn);
                 }
 
-                WalChange.ChangeType changeType = change.getType();
-                RowData row = null;
-                if (changeType == WalChange.ChangeType.INSERT) {
-                    row = convertWalColumnsToRowData(change.getAfterColumns());
-                } else if (changeType == WalChange.ChangeType.UPDATE) {
-                    row = convertWalColumnsToRowData(change.getAfterColumns());
-                } else if (changeType == WalChange.ChangeType.DELETE) {
-                    LOG.debug("Detected DELETE on {}.{}", change.getSchema(), change.getTable());
-                }
+                for (WalChange change : changes) {
+                    if (!change.isDataChange()) {
+                        continue;
+                    }
 
-                if (row != null) {
-                    synchronized (ctx.getCheckpointLock()) {
-                        ctx.collect(row);
+                    // Filter out changes from non-target tables.
+                    // WAL logical decoding captures ALL changes in the database,
+                    // but we only want changes for the configured table.
+                    String changeSchema = change.getSchema();
+                    String changeTable = change.getTable();
+                    if (changeSchema == null
+                            || changeTable == null
+                            || !changeSchema.equalsIgnoreCase(schema)
+                            || !changeTable.equalsIgnoreCase(tableName)) {
+                        LOG.debug(
+                                "Skipping change from non-target table: {}.{}",
+                                changeSchema,
+                                changeTable);
+                        continue;
+                    }
+
+                    WalChange.ChangeType changeType = change.getType();
+                    RowData row = null;
+                    try {
+                        if (changeType == WalChange.ChangeType.INSERT) {
+                            row = convertWalColumnsToRowData(change.getAfterColumns());
+                        } else if (changeType == WalChange.ChangeType.UPDATE) {
+                            row = convertWalColumnsToRowData(change.getAfterColumns());
+                        } else if (changeType == WalChange.ChangeType.DELETE) {
+                            LOG.debug(
+                                    "Detected DELETE on {}.{}",
+                                    change.getSchema(),
+                                    change.getTable());
+                        }
+                    } catch (Exception e) {
+                        LOG.warn(
+                                "Failed to convert WAL change on {}.{}: {}",
+                                changeSchema,
+                                changeTable,
+                                e.getMessage());
+                        continue;
+                    }
+
+                    if (row != null) {
+                        synchronized (ctx.getCheckpointLock()) {
+                            ctx.collect(row);
+                        }
                     }
                 }
-            }
 
-            if (changes.isEmpty()) {
-                Thread.sleep(pollIntervalMs);
+                if (changes.isEmpty()) {
+                    Thread.sleep(pollIntervalMs);
+                }
+            } catch (InterruptedException e) {
+                LOG.info("WAL streaming loop interrupted, running={}", running);
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Exception e) {
+                LOG.error(
+                        "Error in WAL streaming loop, running={}: {}", running, e.getMessage(), e);
+                throw e;
             }
         }
+        LOG.info("Exited WAL streaming loop, running={}", running);
     }
 
     /** Phase 2b: Polling-based streaming using ChangeDataPoller. */
