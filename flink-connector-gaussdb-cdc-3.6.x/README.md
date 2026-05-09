@@ -92,6 +92,18 @@ CREATE TABLE student_cdc (
 SELECT * FROM student_cdc;
 ```
 
+> **⚠️ SQL Client 查询 CDC 数据必须使用 TABLEAU 模式**
+>
+> 由于 Flink 框架的 collect sink 版本握手问题，在 SQL Client 中 SELECT CDC 表时，默认 TABLE 结果模式下数据无法显示。执行 SELECT 前必须先设置：
+> ```sql
+> SET 'sql-client.execution.result-mode' = 'TABLEAU';
+> ```
+> - **交互模式**（`sql-client.sh`）：TABLEAU 模式下结果持续打印到终端，`Ctrl+C` 停止
+> - **非交互模式**（`sql-client.sh -f xxx.sql`）：SQL 文件开头添加上述 SET 语句
+> - **INSERT INTO 写入 Sink**：不受此限制影响，数据流在 Flink 集群内部传输
+>
+> 根因：Flink `CollectResultFetcher.isJobTerminated()` 对所有异常返回 `true`，导致流式 CDC 查询结果拉取过早终止（Flink 框架级问题）
+
 ### DataStream API 使用
 
 ```java
@@ -197,7 +209,7 @@ cp target/flink-connector-gaussdb-cdc-3.6.x-*.jar $FLINK_HOME/lib/
 # 2. 启动 Flink 集群
 $FLINK_HOME/bin/start-cluster.sh
 
-# 3. SQL Client 提交 CDC 任务
+# 3. SQL Client 提交 CDC 任务（注意：SQL 文件中需设置 result-mode=TABLEAU）
 $FLINK_HOME/bin/sql-client.sh -f test_cdc.sql
 ```
 
