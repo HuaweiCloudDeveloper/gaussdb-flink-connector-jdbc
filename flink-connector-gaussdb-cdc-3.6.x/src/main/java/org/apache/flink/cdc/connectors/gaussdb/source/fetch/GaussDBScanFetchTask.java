@@ -272,7 +272,13 @@ public class GaussDBScanFetchTask extends AbstractScanFetchTask {
             final GaussDBSnapshotContext ctx = (GaussDBSnapshotContext) snapshotContext;
             ctx.offset = offsetContext;
 
-            refreshSchema(databaseSchema, jdbcConnection, true);
+            // Skip refreshSchema() for GaussDB - the schema is already initialized
+            // in GaussDBSourceFetchTaskContext.configure() with the correct TableId
+            // that includes the catalog (database) name. refreshSchema() would
+            // clear the existing schema and re-read from DatabaseMetaData, which
+            // may produce TableIds without the catalog, causing tableFor() to
+            // return null.
+            // refreshSchema(databaseSchema, jdbcConnection, true);
             createDataEvents(ctx, snapshotSplit.getTableId());
 
             return SnapshotResult.completed(ctx.offset);
@@ -283,10 +289,25 @@ public class GaussDBScanFetchTask extends AbstractScanFetchTask {
             EventDispatcher.SnapshotReceiver<PostgresPartition> snapshotReceiver =
                     eventDispatcher.getSnapshotChangeEventReceiver();
             LOG.info("Snapshotting table {}", tableId);
+            Table table = databaseSchema.tableFor(tableId);
+            if (table == null) {
+                LOG.warn(
+                        "Table {} not found in databaseSchema, trying schema.table match", tableId);
+                // Try to find the table with a TableId that doesn't include the catalog
+                for (TableId registeredId : databaseSchema.tableIds()) {
+                    if (registeredId.table().equals(tableId.table())
+                            && registeredId.schema().equals(tableId.schema())) {
+                        LOG.info(
+                                "Found matching table by schema+table name: {} -> {}",
+                                tableId,
+                                registeredId);
+                        table = databaseSchema.tableFor(registeredId);
+                        break;
+                    }
+                }
+            }
             createDataEventsForTable(
-                    snapshotContext,
-                    snapshotReceiver,
-                    Objects.requireNonNull(databaseSchema.tableFor(tableId)));
+                    snapshotContext, snapshotReceiver, Objects.requireNonNull(table));
             snapshotReceiver.completeSnapshot();
         }
 

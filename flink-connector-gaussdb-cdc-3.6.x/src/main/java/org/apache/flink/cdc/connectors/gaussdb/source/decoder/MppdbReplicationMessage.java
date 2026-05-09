@@ -34,6 +34,7 @@ import java.util.OptionalLong;
 public class MppdbReplicationMessage implements ReplicationMessage {
 
     private final Operation operation;
+    private final String catalogName;
     private final String schema;
     private final String table;
     private final List<Column> newColumns;
@@ -47,7 +48,19 @@ public class MppdbReplicationMessage implements ReplicationMessage {
             List<Column> newColumns,
             List<Column> oldColumns,
             String rawData) {
+        this(operation, null, schema, table, newColumns, oldColumns, rawData);
+    }
+
+    MppdbReplicationMessage(
+            Operation operation,
+            String catalogName,
+            String schema,
+            String table,
+            List<Column> newColumns,
+            List<Column> oldColumns,
+            String rawData) {
         this.operation = operation;
+        this.catalogName = catalogName;
         this.schema = schema;
         this.table = table;
         this.newColumns = newColumns;
@@ -72,7 +85,22 @@ public class MppdbReplicationMessage implements ReplicationMessage {
 
     @Override
     public String getTable() {
-        return table;
+        // Return fully-qualified table name (e.g., "postgres.public.test_cdc") so that
+        // PostgresSchema.parse() can correctly create a TableId that matches the one
+        // registered in PostgresSchema via buildAndRegisterSchema(). The registered
+        // TableId includes the catalog (database name) from readSchema(), so the lookup
+        // must also include it. Without the catalog, PostgresSchema.parse("public.test_cdc")
+        // would produce TableId(null, "public", "test_cdc") which doesn't match
+        // TableId("postgres", "public", "test_cdc").
+        StringBuilder sb = new StringBuilder();
+        if (catalogName != null && !catalogName.isEmpty()) {
+            sb.append(catalogName).append('.');
+        }
+        if (schema != null && !schema.isEmpty()) {
+            sb.append(schema).append('.');
+        }
+        sb.append(table);
+        return sb.toString();
     }
 
     @Override

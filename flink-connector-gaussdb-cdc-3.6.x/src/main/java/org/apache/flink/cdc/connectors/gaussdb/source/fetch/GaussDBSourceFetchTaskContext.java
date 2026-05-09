@@ -23,6 +23,8 @@ import org.apache.flink.cdc.connectors.base.source.meta.offset.Offset;
 import org.apache.flink.cdc.connectors.base.source.meta.split.SnapshotSplit;
 import org.apache.flink.cdc.connectors.base.source.meta.split.SourceSplitBase;
 import org.apache.flink.cdc.connectors.base.source.meta.split.StreamSplit;
+import org.apache.flink.cdc.connectors.base.source.meta.wartermark.WatermarkEvent;
+import org.apache.flink.cdc.connectors.base.source.meta.wartermark.WatermarkKind;
 import org.apache.flink.cdc.connectors.base.source.reader.external.JdbcSourceFetchTaskContext;
 import org.apache.flink.cdc.connectors.gaussdb.source.GaussDBDialect;
 import org.apache.flink.cdc.connectors.gaussdb.source.config.GaussDBSourceConfig;
@@ -65,6 +67,7 @@ import sun.misc.Unsafe;
 
 import java.lang.reflect.Field;
 import java.sql.SQLException;
+import java.util.Map;
 
 import static io.debezium.connector.AbstractSourceInfo.SCHEMA_NAME_KEY;
 import static io.debezium.connector.AbstractSourceInfo.TABLE_NAME_KEY;
@@ -191,6 +194,15 @@ public class GaussDBSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
         TopicSelector<TableId> topicSelector = PostgresTopicSelector.create(dbzConfig);
 
         try {
+            String tableIncludeList = dbzConfig.tableIncludeList();
+            String schemaIncludeList = dbzConfig.getConfig().getString("schema.include.list");
+            String databaseIncludeList = dbzConfig.getConfig().getString("database.include.list");
+            LOG.info(
+                    "Initializing PostgresSchema with table schemas: {}, table.include.list={}, schema.include.list={}, database.include.list={}",
+                    sourceSplitBase.getTableSchemas().keySet(),
+                    tableIncludeList,
+                    schemaIncludeList,
+                    databaseIncludeList);
             this.schema =
                     PostgresObjectUtils.newSchema(
                             jdbcConnection,
@@ -199,6 +211,148 @@ public class GaussDBSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
                             topicSelector,
                             valueConverterBuilder.build(jdbcConnection.getTypeRegistry()),
                             sourceSplitBase.getTableSchemas().values());
+            LOG.info("PostgresSchema after newSchema(): tableIds={}", schema.tableIds());
+
+            // Debug: check if schemaFor returns anything for our tables
+            for (TableId tid : sourceSplitBase.getTableSchemas().keySet()) {
+                LOG.info(
+                        "schemaFor({}) = {}, tableFor({}) = {}",
+                        tid,
+                        schema.schemaFor(tid),
+                        tid,
+                        schema.tableFor(tid));
+            }
+
+            // PostgresObjectUtils.newSchema() calls buildAndRegisterSchema() which
+            // populates schemasByTableId. However, the Table objects from
+            // queryTableSchema() have 2-part TableIds (without catalog) because
+            // GaussDB JDBC's readSchema() doesn't include the catalog in TableId.
+            // The snapshot split uses 3-part TableIds (with catalog), so lookups
+            // like tableFor() and schemaFor() fail because TableId.equals() compares
+            // all three parts.
+            //
+            // Fix: For each table change, rebuild the Table with the correct 3-part
+            // TableId (including the catalog/database name), then register it in
+            // both the Tables map and schemasByTableId.
+            String databaseName = dbzConfig.getJdbcConfig().getDatabase();
+            try {
+                java.lang.reflect.Method tablesMethod =
+                        io.debezium.relational.RelationalDatabaseSchema.class.getDeclaredMethod(
+                                "tables");
+                tablesMethod.setAccessible(true);
+                io.debezium.relational.Tables tables =
+                        (io.debezium.relational.Tables) tablesMethod.invoke(schema);
+
+                // Also get the schemasByTableId field to register schemas
+                java.lang.reflect.Field schemasByTableIdField =
+                        io.debezium.relational.RelationalDatabaseSchema.class.getDeclaredField(
+                                "schemasByTableId");
+                schemasByTableIdField.setAccessible(true);
+                Object schemasByTableId = schemasByTableIdField.get(schema);
+                java.lang.reflect.Method putMethod =
+                        schemasByTableId
+                                .getClass()
+                                .getDeclaredMethod(
+                                        "put",
+                                        io.debezium.relational.TableId.class,
+                                        io.debezium.relational.TableSchema.class);
+                putMethod.setAccessible(true);
+
+                // Get the schemaBuilder to create TableSchema objects
+                java.lang.reflect.Field schemaBuilderField =
+                        io.debezium.relational.RelationalDatabaseSchema.class.getDeclaredField(
+                                "schemaBuilder");
+                schemaBuilderField.setAccessible(true);
+                io.debezium.relational.TableSchemaBuilder schemaBuilder =
+                        (io.debezium.relational.TableSchemaBuilder) schemaBuilderField.get(schema);
+
+                // Get schemaPrefix
+                java.lang.reflect.Field schemaPrefixField =
+                        io.debezium.relational.RelationalDatabaseSchema.class.getDeclaredField(
+                                "schemaPrefix");
+                schemaPrefixField.setAccessible(true);
+                String schemaPrefix = (String) schemaPrefixField.get(schema);
+
+                // Get the tableFilter used in buildAndRegisterSchema
+                java.lang.reflect.Field tableFilterField =
+                        io.debezium.relational.RelationalDatabaseSchema.class.getDeclaredField(
+                                "tableFilter");
+                tableFilterField.setAccessible(true);
+                io.debezium.relational.Tables.TableFilter tableFilter =
+                        (io.debezium.relational.Tables.TableFilter) tableFilterField.get(schema);
+
+                for (io.debezium.relational.history.TableChanges.TableChange tableChange :
+                        sourceSplitBase.getTableSchemas().values()) {
+                    io.debezium.relational.Table table = tableChange.getTable();
+                    TableId originalId = table.id();
+                    LOG.info(
+                            "Processing tableChange: originalId={}, catalog={}, schema={}, table={}",
+                            originalId,
+                            originalId.catalog(),
+                            originalId.schema(),
+                            originalId.table());
+
+                    // GaussDB JDBC's readSchema() may report the schema name
+                    // as the catalog name (e.g., TableId("public", null, "test_cdc"))
+                    // instead of the expected format
+                    // TableId("postgres", "public", "test_cdc"). We need to
+                    // detect this and rebuild the table with the correct TableId.
+                    TableId correctId = originalId;
+                    boolean needsRebuild = false;
+                    if (!databaseName.equals(originalId.catalog()) && originalId.schema() == null) {
+                        // catalog has the schema name, schema is null
+                        // -> rebuild as TableId(databaseName, schemaName, table)
+                        correctId =
+                                new TableId(databaseName, originalId.catalog(), originalId.table());
+                        needsRebuild = true;
+                    } else if (originalId.catalog() == null || originalId.catalog().isEmpty()) {
+                        // catalog is empty, schema has the schema name
+                        // -> rebuild as TableId(databaseName, schemaName, table)
+                        correctId =
+                                new TableId(databaseName, originalId.schema(), originalId.table());
+                        needsRebuild = true;
+                    }
+                    if (needsRebuild) {
+                        table = table.edit().tableId(correctId).create();
+                        LOG.info(
+                                "Rebuilt table with correct TableId: {} -> {}",
+                                originalId,
+                                correctId);
+                    }
+
+                    // Register the table in the Tables map
+                    tables.overwriteTable(table);
+
+                    // Build and register the TableSchema if not already present
+                    if (tableFilter.isIncluded(correctId) && schema.schemaFor(correctId) == null) {
+                        io.debezium.relational.TableSchema tableSchema =
+                                schemaBuilder.create(
+                                        schemaPrefix,
+                                        "gaussdb_cdc_source",
+                                        table,
+                                        dbzConfig.getColumnFilter(),
+                                        io.debezium.relational.mapping.ColumnMappers.create(
+                                                dbzConfig),
+                                        dbzConfig.getKeyMapper());
+                        putMethod.invoke(schemasByTableId, correctId, tableSchema);
+                        LOG.info("Registered TableSchema for {} in schemasByTableId", correctId);
+                    }
+                }
+            } catch (ReflectiveOperationException e) {
+                throw new RuntimeException(
+                        "Failed to register tables in PostgresSchema via reflection", e);
+            }
+            LOG.info(
+                    "PostgresSchema after registration: tableIds={}, tableFor={}",
+                    schema.tableIds(),
+                    schema.tableFor(sourceSplitBase.getTableSchemas().keySet().iterator().next()));
+
+            // Verify filter matching for each table
+            io.debezium.relational.Tables.TableFilter filter =
+                    dbzConfig.getTableFilters().dataCollectionFilter();
+            for (TableId tid : sourceSplitBase.getTableSchemas().keySet()) {
+                LOG.info("TableFilter.isIncluded({}) = {}", tid, filter.isIncluded(tid));
+            }
         } catch (SQLException e) {
             throw new RuntimeException("Failed to initialize PostgresSchema", e);
         }
@@ -287,12 +441,37 @@ public class GaussDBSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
         return eventDispatcher;
     }
 
+    /**
+     * Returns a {@link WatermarkDispatcher} implementation that delegates watermark events to the
+     * Debezium {@link ChangeEventQueue}.
+     *
+     * <p>This is needed because {@link PostgresEventDispatcher} does not implement {@link
+     * WatermarkDispatcher}, unlike the base {@code JdbcSourceEventDispatcher} used by other CDC
+     * connectors. The watermark events are used by the snapshot scan task to coordinate the
+     * transition between snapshot and stream phases.
+     */
     @Override
     public WatermarkDispatcher getWaterMarkDispatcher() {
-        // Wrap the event dispatcher as a WatermarkDispatcher
-        // The base class expects WatermarkDispatcher but PostgresEventDispatcher may not
-        // implement it. We'll return the eventDispatcher and handle it through the base.
-        return null;
+        return new WatermarkDispatcher() {
+            @Override
+            public void dispatchWatermarkEvent(
+                    Map<String, ?> sourcePartition,
+                    org.apache.flink.cdc.connectors.base.source.meta.split.SourceSplitBase split,
+                    org.apache.flink.cdc.connectors.base.source.meta.offset.Offset offset,
+                    WatermarkKind kind)
+                    throws InterruptedException {
+                String topicName =
+                        sourceConfig
+                                .getDbzProperties()
+                                .getProperty(
+                                        "topic.prefix",
+                                        sourceConfig.getDbzConnectorConfig().getLogicalName());
+                SourceRecord watermarkRecord =
+                        WatermarkEvent.create(
+                                sourcePartition, topicName, split.splitId(), kind, offset);
+                queue.enqueue(new DataChangeEvent(watermarkRecord));
+            }
+        };
     }
 
     @Override
@@ -388,17 +567,39 @@ public class GaussDBSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
                     replicationConnection.getClass().getDeclaredField("messageDecoder");
             long decoderOffset = unsafe.objectFieldOffset(decoderField);
 
+            int parallelDecodeNum = ((GaussDBSourceConfig) sourceConfig).getParallelDecodeNum();
             String decodeStyle = ((GaussDBSourceConfig) sourceConfig).getDecodeStyle();
             Object decoder;
-            if ("b".equals(decodeStyle)) {
-                decoder = new MppdbBinaryMessageDecoder();
+            // In serial mode (parallelDecodeNum <= 1), mppdb_decoding always outputs
+            // JSON format regardless of the decode-style parameter. Only in parallel
+            // mode (parallelDecodeNum > 1) does the decode-style parameter take effect.
+            if (parallelDecodeNum > 1 && "b".equals(decodeStyle)) {
+                String schemaName =
+                        sourceConfig.getDbzProperties().getProperty("schema.include.list");
+                String databaseName =
+                        sourceConfig.getDbzProperties().getProperty("database.dbname");
+                decoder = new MppdbBinaryMessageDecoder(schemaName, databaseName);
                 LOG.info(
-                        "Replaced messageDecoder with MppdbBinaryMessageDecoder for mppdb_decoding (decode-style=b)");
+                        "Replaced messageDecoder with MppdbBinaryMessageDecoder for mppdb_decoding "
+                                + "(parallel-decode-num={}, decode-style=b, schemaName={}, catalogName={})",
+                        parallelDecodeNum,
+                        schemaName,
+                        databaseName);
             } else {
-                decoder = new MppdbDecodingMessageDecoder();
+                // Pass the expected schema name so that the decoder can correct
+                // the schema in mppdb_decoding serial mode output (e.g., root.table ->
+                // public.table)
+                String schemaName =
+                        sourceConfig.getDbzProperties().getProperty("schema.include.list");
+                String databaseName =
+                        sourceConfig.getDbzProperties().getProperty("database.dbname");
+                decoder = new MppdbDecodingMessageDecoder(schemaName, databaseName);
                 LOG.info(
-                        "Replaced messageDecoder with MppdbDecodingMessageDecoder for mppdb_decoding (decode-style={})",
-                        decodeStyle);
+                        "Replaced messageDecoder with MppdbDecodingMessageDecoder for mppdb_decoding "
+                                + "(parallel-decode-num={}, decode-style={}, schemaName={})",
+                        parallelDecodeNum,
+                        decodeStyle,
+                        schemaName);
             }
             unsafe.putObject(replicationConnection, decoderOffset, decoder);
 
@@ -435,9 +636,15 @@ public class GaussDBSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
     }
 
     private String getTableList(TableId tableId) {
-        if (tableId.schema() == null || tableId.schema().isEmpty()) {
-            return tableId.table();
+        // Use 2-part format (schema.table) for table.include.list because Debezium's
+        // PostgreSQL TableIdToStringMapper converts TableId to "schema.table" format
+        // (ignoring catalog). Using 3-part format (catalog.schema.table) would not
+        // match because the mapper strips the catalog part before comparison.
+        // See: PostgresConnectorConfig.lambda$new$3 which does tableId.schema() + "." +
+        // tableId.table()
+        if (tableId.schema() != null && !tableId.schema().isEmpty()) {
+            return tableId.schema() + "." + tableId.table();
         }
-        return tableId.schema() + "." + tableId.table();
+        return tableId.table();
     }
 }

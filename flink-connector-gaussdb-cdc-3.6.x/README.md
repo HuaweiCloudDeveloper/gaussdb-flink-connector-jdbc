@@ -15,38 +15,104 @@
 
 ## 参数说明
 
-### 必需参数
+### 连接参数
 
-| 参数 | 说明 |
-|------|------|
-| `hostname` | GaussDB 主机地址 |
-| `port` | 端口，默认 `8000` |
-| `database-name` | 数据库名 |
-| `schema-name` | Schema，默认 `public` |
-| `table-name` | 监控的表名，支持正则匹配多表 |
-| `username` | 用户名 |
-| `password` | 密码 |
-| `slot.name` | 逻辑复制 slot 名 |
+| 参数 | 是否必填 | 默认值 | 可选值 | 说明 |
+|------|---------|--------|--------|------|
+| `hostname` | ✅ | — | — | GaussDB 主机地址 |
+| `port` | ❌ | `8000` | 1~65535 | GaussDB 端口 |
+| `database-name` | ✅ | — | — | 数据库名 |
+| `schema-name` | ❌ | `public` | — | Schema 名 |
+| `table-name` | ✅ | — | — | 监控的表名，支持正则匹配多表（如 `public\.user_.*`） |
+| `username` | ✅ | — | — | GaussDB 用户名 |
+| `password` | ✅ | — | — | GaussDB 密码 |
+| `slot.name` | ✅ | — | — | 逻辑复制 slot 名。Connector 启动时若 slot 不存在会自动创建 |
 
-### 可选参数
+### 快照与启动参数
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `decoding.plugin.name` | `mppdb_decoding` | 逻辑解码插件，GaussDB 需用 `mppdb_decoding` |
-| `changelog-mode` | `all` | `all` = retract 流（默认）；`upsert` = upsert 流 |
-| `scan.startup.mode` | `initial` | 启动模式：`initial` / `snapshot` / `latest-offset` / `committed-offset` |
-| `scan.incremental.snapshot.enabled` | `true` | 是否启用增量快照 |
-| `scan.incremental.snapshot.chunk.size` | `8096` | 快照分片大小 |
-| `connection.pool.size` | `20` | JDBC 连接池大小 |
-| `connect.timeout` | `30s` | JDBC 连接超时 |
-| `heartbeat.interval.ms` | `30s` | 心跳间隔，用于追踪复制 slot 进度 |
-| `parallel-decode-num` | `1` | 并行解码线程数（1~20）。`1` 为串行解码，**只有 >1 时 decode-style 和 sending-batch 才生效** |
-| `decode-style` | `b` | 解码输出格式：`b`=binary，`j`=json，`t`=text。**parallel-decode-num=1 时只能用 `j`** |
-| `sending-batch` | `false` | `true` 时解码结果累积到 1MB 后批量发送，减少网络交互 |
+| 参数 | 是否必填 | 默认值 | 可选值 | 说明 |
+|------|---------|--------|--------|------|
+| `scan.startup.mode` | ❌ | `initial` | `initial` / `snapshot` / `latest-offset` / `committed-offset` | 启动模式：<br>- `initial`：先全量快照，再增量流式（默认）<br>- `snapshot`：仅全量快照，不同步增量<br>- `latest-offset`：从最新 LSN 开始流式，不读快照<br>- `committed-offset`：从上次提交的 checkpoint LSN 恢复 |
+| `scan.incremental.snapshot.enabled` | ❌ | `true` | `true` / `false` | 是否启用增量快照。`true` 时使用无锁快照分片读取；`false` 时退化为单线程全表扫描 |
+| `scan.incremental.snapshot.chunk.size` | ❌ | `8096` | ≥1 | 快照分片大小（行数）。分片越大，快照阶段产生的 split 越少，但单次读取数据量越大 |
+| `connection.pool.size` | ❌ | `20` | ≥1 | JDBC 连接池大小，用于快照阶段并行分片读取 |
+| `connect.timeout` | ❌ | `30s` | — | JDBC 连接超时 |
+| `connect.max-retries` | ❌ | `3` | ≥0 | 连接失败重试次数 |
+| `heartbeat.interval.ms` | ❌ | `30s` | — | 心跳间隔，用于追踪复制 slot 进度，防止 slot 因长时间无活动而被回收 |
 
-> **参数依赖关系**：
-> - `parallel-decode-num > 1` 时，`decode-style`（'b'/'j'/'t'）和 `sending-batch`（true/false）才生效
-> - `parallel-decode-num = 1` 时，底层强制使用 JSON 输出，不支持 `decode-style='b'`
+### 逻辑解码参数（mppdb_decoding）
+
+| 参数 | 是否必填 | 默认值 | 可选值 | 说明 |
+|------|---------|--------|--------|------|
+| `decoding.plugin.name` | ❌ | `mppdb_decoding` | `mppdb_decoding` / `pgoutput` | 逻辑解码插件。GaussDB 必须使用 `mppdb_decoding` |
+| `parallel-decode-num` | ❌ | `1` | 1~20 | 并行解码线程数。<br>- `1` = 串行解码（默认）<br>- `>1` = 并行解码，此时 `decode-style` 和 `sending-batch` 才生效 |
+| `decode-style` | ❌ | `b` | `b` / `j` / `t` | 解码输出格式（**仅 parallel-decode-num > 1 时生效**）：<br>- `b` = binary（推荐，性能最好）<br>- `j` = json<br>- `t` = text<br>串行模式（parallel-decode-num=1）时底层强制 JSON，此参数无效 |
+| `sending-batch` | ❌ | `false` | `true` / `false` | 是否批量发送解码结果（**仅 parallel-decode-num > 1 时生效**）。`true` 时结果累积到 1MB 后批量发送，减少网络交互 |
+
+> **参数依赖关系**
+>
+> 1. `parallel-decode-num > 1` 时，`decode-style`（`b`/`j`/`t`）和 `sending-batch`（`true`/`false`）才会被注入到 GaussDB 的 `START_REPLICATION` 命令中
+> 2. `parallel-decode-num = 1` 时，mppdb_decoding 强制输出 JSON，不支持 binary 格式
+> 3. 这些参数在底层通过 `slot.stream.params` 自动传递给 GaussDB，用户**无需手动拼接**
+
+### Changelog 与高级参数
+
+| 参数 | 是否必填 | 默认值 | 可选值 | 说明 |
+|------|---------|--------|--------|------|
+| `changelog-mode` | ❌ | `all` | `all` / `upsert` | Changelog 编码模式：<br>- `all`：输出完整的 retract 流（`+I` `-U` `+U` `-D`），适用于需要完整变更语义的场景（默认）<br>- `upsert`：输出 upsert 流（`+I` `+U` `-D`），要求表必须有主键，适用于直接写入支持 upsert 的 Sink |
+| `scan.lsn-commit.checkpoints-num-delay` | ❌ | `3` | ≥0 | LSN 提交延迟的 checkpoint 数量。流式阶段每 N 个 checkpoint 才向 GaussDB 确认一次 LSN，避免频繁确认影响性能 |
+| `table-id.include-database` | ❌ | `true` | `true` / `false` | Table ID 是否包含数据库名。`true` 时格式为 `(database, schema, table)` |
+
+### Debezium 透传参数
+
+CDC 3.6.x 基于 Debezium，任何 Debezium PostgreSQL Connector 支持的参数都可以通过 `debezium.` 前缀透传。
+
+| 常见场景 | 参数写法 | 说明 |
+|---------|---------|------|
+| SSL 模式 | `'debezium.database.sslmode' = 'disable'` | 禁用 SSL。可选 `disable` / `allow` / `prefer` / `require` / `verify-ca` / `verify-full` |
+| SSL 根证书 | `'debezium.database.sslrootcert' = '/path/to/ca.crt'` | 指定 CA 证书路径 |
+| 其他 Debezium 参数 | `'debezium.xxx.yyy' = 'zzz'` | 参考 Debezium PostgreSQL Connector 文档 |
+
+> **注意**：CDC 3.6.x **没有 `walmode` 参数**（CDC 2.4.x 中用于切换 WAL/轮询模式）。CDC 3.6.x 始终使用 WAL 逻辑解码，不支持轮询模式。
+
+### 完整参数示例（Flink SQL）
+
+```sql
+CREATE TABLE student_cdc (
+    id INT,
+    name STRING,
+    age INT,
+    PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+    -- 基础连接（必填）
+    'connector' = 'gaussdb-cdc',
+    'hostname' = 'localhost',
+    'port' = '8000',
+    'database-name' = 'test',
+    'schema-name' = 'public',
+    'table-name' = 'student',
+    'username' = 'root',
+    'password' = 'password',
+    'slot.name' = 'flink_cdc_slot',
+
+    -- 解码插件（默认 mppdb_decoding，一般不用显式写）
+    'decoding.plugin.name' = 'mppdb_decoding',
+
+    -- 启动模式（默认 initial）
+    'scan.startup.mode' = 'initial',
+
+    -- 增量快照（默认 true）
+    'scan.incremental.snapshot.enabled' = 'true',
+
+    -- 并行解码（串行模式 parallel-decode-num=1 时，decode-style 无效）
+    'parallel-decode-num' = '4',
+    'decode-style' = 'b',
+    'sending-batch' = 'true',
+
+    -- SSL（通过 Debezium 透传）
+    'debezium.database.sslmode' = 'disable'
+);
+```
 
 ## 快速开始
 
