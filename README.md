@@ -188,7 +188,7 @@ $FLINK_HOME/bin/start-cluster.sh
 
 #### 使用 SQL Client 查看 CDC 数据
 
-> **重要**：在 Flink SQL Client 中 SELECT CDC 表时，**必须使用 TABLEAU 结果模式**，否则默认 TABLE 模式下数据无法显示（已在 CDC 3.6.x + Flink 1.20.3 上验证）。详见 [注意事项](#注意事项)。
+> **重要**：使用 CDC 3.6.x 模块时，在 Flink SQL Client 中 SELECT CDC 表必须设置 TABLEAU 结果模式，否则默认 TABLE 模式下数据无法显示。详见 [注意事项](#注意事项)。
 
 **交互模式**（实时查看变更）：
 
@@ -340,12 +340,12 @@ Connector 基于 Debezium PostgreSQL Connector 构建，通过以下方式适配
 4. **字符编码**：GaussDB B 模式建议使用 UTF-8 编码，URL 中添加 `characterEncoding=UTF-8`
 5. **CDC 需要开启 Checkpoint**：Flink CDC 任务必须配置 checkpoint，否则 offset 无法提交，复制 slot 的 WAL 不会被回收
 6. **REPLICA IDENTITY**：Binary 模式下 DELETE 和 UPDATE 的 before image 取决于表的 REPLICA IDENTITY 设置（DEFAULT 仅含主键列，FULL 含全部列）
-7. **SQL Client 查询 CDC 数据**：在 Flink SQL Client 中使用 SELECT 查询 CDC 表时，必须设置 `TABLEAU` 结果模式，否则默认 `TABLE` 模式下 collect sink 的版本握手机制会导致数据无法显示（已在 CDC 3.6.x + Flink 1.20.3 上验证，其他 CDC 模块未实测）
+7. **SQL Client 查询 CDC 3.6.x 数据**：使用 CDC 3.6.x 模块时，在 Flink SQL Client 中 SELECT CDC 表必须设置 `TABLEAU` 结果模式，否则默认 `TABLE` 模式下 collect sink 的版本握手机制会导致数据无法显示
    ```sql
    -- 在执行 SELECT 之前添加：
    SET 'sql-client.execution.result-mode' = 'TABLEAU';
    ```
-   > **原因**：Flink 的 `CollectResultFetcher.isJobTerminated()` 方法对所有异常（包括 `InterruptedException`）都返回 `true`，导致流式 CDC 查询的结果拉取被过早终止。这是 Flink 框架级问题，理论上影响所有流式 CDC Source，`TABLEAU` 模式绕过了 collect sink 的 socket 通信机制。
+   > **原因**：Flink 的 `CollectResultFetcher.isJobTerminated()` 方法对所有异常（包括 `InterruptedException`）都返回 `true`，导致流式 CDC 查询的结果拉取被过早终止。目前仅在 CDC 3.6.x + Flink 1.20.3 上发现此问题。
 
 ## 各模块详细文档
 
