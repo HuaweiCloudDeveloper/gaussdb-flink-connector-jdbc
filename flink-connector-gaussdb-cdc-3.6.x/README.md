@@ -94,7 +94,7 @@ SELECT * FROM student_cdc;
 
 > **⚠️ SQL Client 查询 CDC 数据必须使用 TABLEAU 模式**
 >
-> 由于 Flink 框架的 collect sink 版本握手问题，在 SQL Client 中 SELECT CDC 表时，默认 TABLE 结果模式下数据无法显示。执行 SELECT 前必须先设置：
+> 在 Flink SQL Client 中 SELECT CDC 表时，默认 TABLE 结果模式下数据无法显示（已在 Flink 1.20.3 上验证）。执行 SELECT 前必须先设置：
 > ```sql
 > SET 'sql-client.execution.result-mode' = 'TABLEAU';
 > ```
