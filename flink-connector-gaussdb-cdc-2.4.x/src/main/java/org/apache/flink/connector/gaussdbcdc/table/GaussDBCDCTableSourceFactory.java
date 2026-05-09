@@ -68,6 +68,7 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
         options.add(GaussDBCDCOptions.PARALLEL_DECODE_NUM);
         options.add(GaussDBCDCOptions.DECODE_STYLE);
         options.add(GaussDBCDCOptions.SENDING_BATCH);
+        options.add(GaussDBCDCOptions.SSL_MODE);
         return options;
     }
 
@@ -94,8 +95,13 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
         int parallelDecodeNum = config.get(GaussDBCDCOptions.PARALLEL_DECODE_NUM);
         String decodeStyle = config.get(GaussDBCDCOptions.DECODE_STYLE);
         boolean sendingBatch = config.get(GaussDBCDCOptions.SENDING_BATCH);
+        String sslMode = config.get(GaussDBCDCOptions.SSL_MODE);
 
-        DataType physicalRowDataType = context.getPhysicalRowDataType();
+        // Use getCatalogTable().getResolvedSchema().toPhysicalRowDataType() instead of
+        // context.getPhysicalRowDataType() for Flink 1.13~1.14 compatibility.
+        // getPhysicalRowDataType() was added as a default method in Flink 1.15+.
+        DataType physicalRowDataType =
+                context.getCatalogTable().getResolvedSchema().toPhysicalRowDataType();
 
         return new GaussDBCDCTableSource(
                 hostname,
@@ -113,6 +119,7 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
                 parallelDecodeNum,
                 decodeStyle,
                 sendingBatch,
+                sslMode,
                 physicalRowDataType);
     }
 }

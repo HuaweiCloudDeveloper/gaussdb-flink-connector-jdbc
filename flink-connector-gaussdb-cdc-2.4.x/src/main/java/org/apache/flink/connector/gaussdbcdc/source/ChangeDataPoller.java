@@ -29,8 +29,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.ArrayList;
@@ -60,6 +62,9 @@ public class ChangeDataPoller {
     private final String tableName;
     private final String primaryKeyColumn;
 
+    // Cached column list (resolved once on first access)
+    private String cachedColumns;
+
     // Tracking state
     private long lastPolledId = 0;
     private Timestamp lastPolledTimestamp = new Timestamp(0);
@@ -73,23 +78,46 @@ public class ChangeDataPoller {
         this.primaryKeyColumn = primaryKeyColumn;
     }
 
+    /**
+     * Dynamically resolve the column list for the target table via JDBC metadata. The result is
+     * cached after the first call.
+     */
+    private String getTableColumns() throws SQLException {
+        if (cachedColumns != null) {
+            return cachedColumns;
+        }
+        DatabaseMetaData meta = connection.getMetaData();
+        List<String> columns = new ArrayList<>();
+        try (ResultSet rs = meta.getColumns(null, schema, tableName, null)) {
+            while (rs.next()) {
+                columns.add(rs.getString("COLUMN_NAME"));
+            }
+        }
+        if (columns.isEmpty()) {
+            throw new SQLException("No columns found for table " + schema + "." + tableName);
+        }
+        cachedColumns = String.join(", ", columns);
+        return cachedColumns;
+    }
+
     /** Poll for new inserts (based on auto-increment ID). */
     public List<ChangeEvent<RowData>> pollNewInserts() throws SQLException {
         List<ChangeEvent<RowData>> events = new ArrayList<>();
 
+        String columns = getTableColumns();
         String sql =
                 String.format(
-                        "SELECT id, name, gender, age, class_name, score, created_date, updated_at "
-                                + "FROM %s.%s WHERE id > ? ORDER BY id LIMIT 1000",
-                        schema, tableName);
+                        "SELECT %s FROM %s.%s WHERE %s > ? ORDER BY %s LIMIT 1000",
+                        columns, schema, tableName, primaryKeyColumn, primaryKeyColumn);
 
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             stmt.setLong(1, lastPolledId);
 
             try (ResultSet rs = stmt.executeQuery()) {
+                ResultSetMetaData meta = rs.getMetaData();
                 while (rs.next()) {
-                    RowData row = convertToRowData(rs);
-                    long id = rs.getLong("id");
+                    RowData row = convertToRowDataDynamic(rs, meta);
+                    long id = rs.getLong(primaryKeyColumn);
 
                     events.add(ChangeEvent.insert(tableName, row, System.currentTimeMillis()));
                     currentSnapshot.put(id, row);
@@ -101,24 +129,25 @@ public class ChangeDataPoller {
         return events;
     }
 
-    /** Poll for updates (based on updated_at timestamp). */
+    /** Poll for updates (based on updated_at timestamp, if available). */
     public List<ChangeEvent<RowData>> pollUpdates() throws SQLException {
         List<ChangeEvent<RowData>> events = new ArrayList<>();
 
         // This requires an 'updated_at' column on the table
+        String columns = getTableColumns();
         String sql =
                 String.format(
-                        "SELECT id, name, gender, age, class_name, score, created_date, updated_at "
-                                + "FROM %s.%s WHERE updated_at > ? ORDER BY updated_at LIMIT 1000",
-                        schema, tableName);
+                        "SELECT %s FROM %s.%s WHERE updated_at > ? ORDER BY updated_at LIMIT 1000",
+                        columns, schema, tableName);
 
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             stmt.setTimestamp(1, lastPolledTimestamp);
 
             try (ResultSet rs = stmt.executeQuery()) {
+                ResultSetMetaData meta = rs.getMetaData();
                 while (rs.next()) {
-                    RowData newRow = convertToRowData(rs);
-                    long id = rs.getLong("id");
+                    RowData newRow = convertToRowDataDynamic(rs, meta);
+                    long id = rs.getLong(primaryKeyColumn);
                     Timestamp updatedAt = rs.getTimestamp("updated_at");
 
                     RowData oldRow = currentSnapshot.get(id);
@@ -208,16 +237,15 @@ public class ChangeDataPoller {
     public void loadSnapshot() throws SQLException {
         currentSnapshot.clear();
 
-        String sql =
-                String.format(
-                        "SELECT id, name, gender, age, class_name, score, created_date FROM %s.%s",
-                        schema, tableName);
+        String columns = getTableColumns();
+        String sql = String.format("SELECT %s FROM %s.%s", columns, schema, tableName);
 
         try (PreparedStatement stmt = connection.prepareStatement(sql);
                 ResultSet rs = stmt.executeQuery()) {
+            ResultSetMetaData meta = rs.getMetaData();
             while (rs.next()) {
-                long id = rs.getLong("id");
-                RowData row = convertToRowData(rs);
+                long id = rs.getLong(primaryKeyColumn);
+                RowData row = convertToRowDataDynamic(rs, meta);
                 currentSnapshot.put(id, row);
 
                 if (id > lastPolledId) {
@@ -232,18 +260,84 @@ public class ChangeDataPoller {
                 lastPolledId);
     }
 
-    private RowData convertToRowData(ResultSet rs) throws SQLException {
-        GenericRowData row = new GenericRowData(7);
-        row.setField(0, rs.getInt("id"));
-        row.setField(1, StringData.fromString(rs.getString("name")));
-        row.setField(2, StringData.fromString(rs.getString("gender")));
-        row.setField(3, rs.getInt("age"));
-        row.setField(4, StringData.fromString(rs.getString("class_name")));
-        row.setField(5, DecimalData.fromBigDecimal(rs.getBigDecimal("score"), 5, 2));
+    /**
+     * Dynamically convert a ResultSet row to GenericRowData using ResultSetMetaData. This replaces
+     * the old hardcoded convertToRowData that assumed a fixed schema.
+     */
+    private RowData convertToRowDataDynamic(ResultSet rs, ResultSetMetaData meta)
+            throws SQLException {
+        int colCount = meta.getColumnCount();
+        GenericRowData row = new GenericRowData(colCount);
 
-        Timestamp createdDate = rs.getTimestamp("created_date");
-        if (createdDate != null) {
-            row.setField(6, TimestampData.fromLocalDateTime(createdDate.toLocalDateTime()));
+        for (int i = 1; i <= colCount; i++) {
+            int sqlType = meta.getColumnType(i);
+            Object value;
+
+            switch (sqlType) {
+                case java.sql.Types.INTEGER:
+                case java.sql.Types.SMALLINT:
+                case java.sql.Types.TINYINT:
+                    value = rs.getInt(i);
+                    if (rs.wasNull()) {
+                        value = null;
+                    }
+                    break;
+                case java.sql.Types.BIGINT:
+                    value = rs.getLong(i);
+                    if (rs.wasNull()) {
+                        value = null;
+                    }
+                    break;
+                case java.sql.Types.VARCHAR:
+                case java.sql.Types.CHAR:
+                case java.sql.Types.NVARCHAR:
+                    String str = rs.getString(i);
+                    value = str != null ? StringData.fromString(str) : null;
+                    break;
+                case java.sql.Types.DECIMAL:
+                case java.sql.Types.NUMERIC:
+                    java.math.BigDecimal bd = rs.getBigDecimal(i);
+                    if (bd != null) {
+                        int p = meta.getPrecision(i);
+                        int s = meta.getScale(i);
+                        value = DecimalData.fromBigDecimal(bd, p, s);
+                        if (value == null) {
+                            value = DecimalData.fromBigDecimal(bd, bd.precision(), s);
+                        }
+                    } else {
+                        value = null;
+                    }
+                    break;
+                case java.sql.Types.TIMESTAMP:
+                case java.sql.Types.TIMESTAMP_WITH_TIMEZONE:
+                    Timestamp ts = rs.getTimestamp(i);
+                    value = ts != null ? TimestampData.fromTimestamp(ts) : null;
+                    break;
+                case java.sql.Types.DATE:
+                    java.sql.Date date = rs.getDate(i);
+                    value = date != null ? (int) date.toLocalDate().toEpochDay() : null;
+                    break;
+                case java.sql.Types.BOOLEAN:
+                    value = rs.getBoolean(i);
+                    if (rs.wasNull()) {
+                        value = null;
+                    }
+                    break;
+                case java.sql.Types.DOUBLE:
+                case java.sql.Types.FLOAT:
+                case java.sql.Types.REAL:
+                    value = rs.getDouble(i);
+                    if (rs.wasNull()) {
+                        value = null;
+                    }
+                    break;
+                default:
+                    String fallback = rs.getString(i);
+                    value = fallback != null ? StringData.fromString(fallback) : null;
+                    break;
+            }
+
+            row.setField(i - 1, value);
         }
 
         return row;

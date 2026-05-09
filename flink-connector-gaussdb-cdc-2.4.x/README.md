@@ -29,6 +29,7 @@
 | `parallel-decode-num` | `1` | 并行解码线程数（1~20）。`1` 为串行解码，**只有 >1 时 decode-style 和 sending-batch 才生效** |
 | `decode-style` | `b` | 解码输出格式：`b`=binary，`j`=json，`t`=text。**parallel-decode-num=1 时只能用 `j`** |
 | `sending-batch` | `false` | `true` 时解码结果累积到 1MB 后批量发送，减少网络交互 |
+| `sslmode` | `prefer` | SSL 模式：`disable`/`allow`/`prefer`/`require`/`verify-ca`/`verify-full` |
 
 > **参数依赖关系**：
 > - `parallel-decode-num > 1` 时，`decode-style`（'b'/'j'/'t'）和 `sending-batch`（true/false）才生效
@@ -66,6 +67,9 @@ CREATE TABLE student_cdc (
     'decode.plugin' = 'mppdb_decoding',
     'slot.name' = 'flink_cdc_slot',
 
+    -- SSL
+    'sslmode' = 'disable',
+
     -- 并行解码（流式复制 API 模式生效）
     'parallel-decode-num' = '4',
     'decode-style' = 'b',
@@ -87,6 +91,7 @@ GaussDBCDCSourceFunction source = GaussDBCDCSourceFunction.builder()
     .walMode(true)
     .slotName("flink_cdc_slot")
     .decodePlugin("mppdb_decoding")
+    .sslMode("disable")
     .parallelDecodeNum(4)
     .decodeStyle("b")
     .sendingBatch(true)
@@ -104,6 +109,25 @@ env.execute("GaussDB CDC Job");
 - 流式复制 API 需 gs_hba.conf 白名单 + enable_thread_pool=off 或 HA 端口
 - `parallel-decode-num=1` 时底层输出 JSON 格式（不支持 `decode-style='b'`），`decode-style` 和 `sending-batch` 仅在 `parallel-decode-num > 1` 时生效
 
+## 注意事项
+
+### 复制槽独占
+
+GaussDB 复制槽**同一时间只能被一个连接使用**。CDC 源表被多个 Flink 作业同时查询时（如 `INSERT INTO ... SELECT` 和 `SELECT * FROM` 同时执行），会报 `replication slot "xxx" is already active`。
+
+**解决方案**：
+- 不同作业使用不同的 `slot.name`
+- 或先取消旧作业再执行新查询
+
+### 轮询模式与 WAL 模式
+
+| 模式 | `wal.mode` | 复制槽 | 适用场景 |
+|------|-----------|--------|---------|
+| 轮询 | `false` | 不需要 | 简单场景，表有自增主键 |
+| WAL 流式 | `true` | **需要** | 实时性要求高，需捕获 DELETE/UPDATE |
+
+> 轮询模式通过 JDBC 轮询检测变更，不支持 DELETE 捕获；WAL 模式通过逻辑解码实时推送变更。
+
 ## 已知问题与修复记录
 
 | 问题 | 根因 | 修复 | 影响 |
@@ -114,6 +138,8 @@ env.execute("GaussDB CDC Job");
 | compatibleMode=mysql 导致连接关闭 | GaussDB 流式复制不支持 MySQL 兼容模式 | 移除 compatibleMode=mysql，改为 sslmode=disable | 流式复制连接不再被服务端关闭 |
 | transient running 反序列化后为 false | Java transient 字段不保留初始值 | open() 中显式设置 this.running = true | WAL streaming loop 不再跳过 |
 | 增量同步捕获其他表变更 | WAL 解码捕获数据库所有表变更 | 添加目标表名过滤，跳过非目标表 | 类型转换错误不再发生 |
+| 轮询模式 `Column "xxx" does not exist` | `ChangeDataPoller` 硬编码了旧测试表的 7 个列名 | 改为通过 `DatabaseMetaData.getColumns()` 动态获取列名 | 轮询模式适配任意表结构 |
+| 不支持 `sslmode` 配置 | JDBC URL 硬编码 `sslmode=disable` | 新增 `sslmode` 选项，默认 `prefer` | 可配置 SSL 加密传输 |
 
 ## Maven 依赖
 

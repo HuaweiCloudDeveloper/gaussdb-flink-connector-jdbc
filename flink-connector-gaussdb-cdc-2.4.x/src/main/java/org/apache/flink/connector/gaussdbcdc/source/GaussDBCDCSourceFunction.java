@@ -25,6 +25,7 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.connector.gaussdbcdc.GaussDBCDCOptions;
 import org.apache.flink.connector.gaussdbcdc.source.wal.WalChange;
 import org.apache.flink.connector.gaussdbcdc.source.wal.WalReplicationStream;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
@@ -36,6 +37,7 @@ import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
+import org.apache.flink.types.RowKind;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -104,6 +106,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private final int parallelDecodeNum;
     private final String decodeStyle;
     private final boolean sendingBatch;
+    private final String sslMode;
 
     // Runtime state
     private transient volatile boolean running = true;
@@ -111,6 +114,9 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private transient WalReplicationStream walReplicationStream;
     private transient ChangeDataPoller changeDataPoller;
     private transient boolean walStreamInitialized = false;
+
+    // Cached column metadata for WAL change conversion
+    private transient List<String> cachedColumnNames;
 
     // Checkpoint state
     private transient ListState<String> offsetState;
@@ -134,6 +140,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         this.parallelDecodeNum = builder.parallelDecodeNum;
         this.decodeStyle = builder.decodeStyle;
         this.sendingBatch = builder.sendingBatch;
+        this.sslMode = builder.sslMode;
     }
 
     @Override
@@ -143,7 +150,8 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         Class.forName("com.huawei.gaussdb.jdbc.Driver");
 
         String url =
-                String.format("jdbc:gaussdb://%s:%d/%s?sslmode=disable", hostname, port, database);
+                String.format(
+                        "jdbc:gaussdb://%s:%d/%s?sslmode=%s", hostname, port, database, sslMode);
         this.connection = DriverManager.getConnection(url, username, password);
 
         if (walMode) {
@@ -167,6 +175,27 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         } else {
             this.changeDataPoller = new ChangeDataPoller(connection, schema, tableName, "id");
             LOG.info("Using polling-based CDC mode");
+        }
+
+        // Cache column names for WAL change conversion (needed because DELETE/UPDATE
+        // may only send a subset of columns, but Flink expects full-row arity)
+        try {
+            java.sql.DatabaseMetaData meta = connection.getMetaData();
+            java.util.List<String> colNames = new java.util.ArrayList<>();
+            try (java.sql.ResultSet rs = meta.getColumns(null, schema, tableName, null)) {
+                while (rs.next()) {
+                    colNames.add(rs.getString("COLUMN_NAME"));
+                }
+            }
+            this.cachedColumnNames = colNames;
+            LOG.info(
+                    "Cached {} columns for table {}.{}: {}",
+                    colNames.size(),
+                    schema,
+                    tableName,
+                    colNames);
+        } catch (Exception e) {
+            LOG.warn("Failed to cache column names for {}.{}", schema, tableName, e);
         }
 
         LOG.info(
@@ -349,6 +378,10 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                         } else if (changeType == WalChange.ChangeType.UPDATE) {
                             row = convertWalColumnsToRowData(change.getAfterColumns());
                         } else if (changeType == WalChange.ChangeType.DELETE) {
+                            row = convertWalColumnsToRowData(change.getBeforeColumns());
+                            if (row != null) {
+                                row.setRowKind(RowKind.DELETE);
+                            }
                             LOG.debug(
                                     "Detected DELETE on {}.{}",
                                     change.getSchema(),
@@ -403,6 +436,10 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                         row = event.getAfter();
                         break;
                     case DELETE:
+                        row = event.getBefore();
+                        if (row != null) {
+                            ((GenericRowData) row).setRowKind(RowKind.DELETE);
+                        }
                         LOG.debug("Detected DELETE event");
                         break;
                     case SNAPSHOT:
@@ -493,15 +530,39 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         if (columns == null || columns.isEmpty()) {
             return null;
         }
-        GenericRowData row = new GenericRowData(columns.size());
-        for (int i = 0; i < columns.size(); i++) {
-            WalChange.ColumnValue col = columns.get(i);
-            if (col.isNull()) {
-                row.setField(i, null);
-                continue;
+        // Use cached column count to ensure RowData arity matches the full table schema.
+        // WAL events (especially DELETE) may only contain a subset of columns,
+        // but Flink's serializer expects the full row arity.
+        int colCount = (cachedColumnNames != null) ? cachedColumnNames.size() : columns.size();
+        GenericRowData row = new GenericRowData(colCount);
+
+        if (cachedColumnNames != null && !cachedColumnNames.isEmpty()) {
+            // Map WAL columns by name to the correct positions
+            java.util.Map<String, WalChange.ColumnValue> colMap = new java.util.HashMap<>();
+            for (WalChange.ColumnValue col : columns) {
+                colMap.put(col.getColumnName(), col);
             }
-            Object value = convertColumnValueByOid(col.getTypeOid(), col.getValue());
-            row.setField(i, value);
+            for (int i = 0; i < cachedColumnNames.size(); i++) {
+                String colName = cachedColumnNames.get(i);
+                WalChange.ColumnValue col = colMap.get(colName);
+                if (col == null || col.isNull()) {
+                    row.setField(i, null);
+                } else {
+                    Object value = convertColumnValueByOid(col.getTypeOid(), col.getValue());
+                    row.setField(i, value);
+                }
+            }
+        } else {
+            // Fallback: assume WAL columns are in table order
+            for (int i = 0; i < columns.size(); i++) {
+                WalChange.ColumnValue col = columns.get(i);
+                if (col.isNull()) {
+                    row.setField(i, null);
+                    continue;
+                }
+                Object value = convertColumnValueByOid(col.getTypeOid(), col.getValue());
+                row.setField(i, value);
+            }
         }
         return row;
     }
@@ -647,6 +708,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         private int parallelDecodeNum = 1;
         private String decodeStyle = "b";
         private boolean sendingBatch = false;
+        private String sslMode = GaussDBCDCOptions.SSL_MODE.defaultValue();
 
         public Builder hostname(String hostname) {
             this.hostname = hostname;
@@ -735,6 +797,11 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
         public Builder sendingBatch(boolean sendingBatch) {
             this.sendingBatch = sendingBatch;
+            return this;
+        }
+
+        public Builder sslMode(String sslMode) {
+            this.sslMode = sslMode;
             return this;
         }
 
