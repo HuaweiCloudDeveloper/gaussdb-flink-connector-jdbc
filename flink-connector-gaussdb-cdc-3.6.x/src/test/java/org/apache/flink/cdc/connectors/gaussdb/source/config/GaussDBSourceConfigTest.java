@@ -79,7 +79,8 @@ class GaussDBSourceConfigTest {
                 true,
                 1,
                 "b",
-                false);
+                false,
+                null);
     }
 
     @Test

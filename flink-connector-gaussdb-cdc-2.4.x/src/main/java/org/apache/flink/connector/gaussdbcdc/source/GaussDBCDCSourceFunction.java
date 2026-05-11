@@ -87,6 +87,23 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private static final long serialVersionUID = 1L;
     private static final Logger LOG = LoggerFactory.getLogger(GaussDBCDCSourceFunction.class);
 
+    /**
+     * TIMESTAMP formatter accepting 0~9 digits of fractional seconds.
+     *
+     * <p>GaussDB strips trailing zeros from TIMESTAMP fractional parts (e.g. {@code
+     * 2026-05-11 14:52:53.4848} has only 4 digits, {@code .48497} has 5 digits). A strict
+     * {@code SSSSSS} pattern (exactly 6 digits) would reject them, causing silent row drops in
+     * the WAL path. Use an optional variable-width fraction to accept any precision.
+     */
+    private static final java.time.format.DateTimeFormatter TIMESTAMP_FORMATTER =
+            new java.time.format.DateTimeFormatterBuilder()
+                    .appendPattern("yyyy-MM-dd HH:mm:ss")
+                    .optionalStart()
+                    .appendFraction(
+                            java.time.temporal.ChronoField.NANO_OF_SECOND, 0, 9, true)
+                    .optionalEnd()
+                    .toFormatter();
+
     // Configuration
     private final String hostname;
     private final int port;
@@ -107,6 +124,11 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private final String decodeStyle;
     private final boolean sendingBatch;
     private final String sslMode;
+    /**
+     * Optional dedicated port for WAL replication streaming. Null means reuse {@link #port} for
+     * replication. See {@link GaussDBCDCOptions#REPLICATION_PORT}.
+     */
+    private final Integer replicationPort;
 
     // Runtime state
     private transient volatile boolean running = true;
@@ -141,6 +163,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         this.decodeStyle = builder.decodeStyle;
         this.sendingBatch = builder.sendingBatch;
         this.sslMode = builder.sslMode;
+        this.replicationPort = builder.replicationPort;
     }
 
     @Override
@@ -166,7 +189,14 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                             parallelDecodeNum,
                             decodeStyle,
                             sendingBatch,
-                            1000);
+                            1000,
+                            replicationPort);
+            if (replicationPort != null) {
+                LOG.info(
+                        "Using dedicated replication port {} for GaussDB WAL streaming (main JDBC port = {})",
+                        replicationPort,
+                        port);
+            }
             LOG.info(
                     "Using WAL mode with plugin={}, parallel-decode-num={}, decode-style={}",
                     decodePlugin,
@@ -593,10 +623,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                         numericBd, numericBd.precision(), numericBd.scale());
             case 1114: // timestamp
                 return TimestampData.fromLocalDateTime(
-                        java.time.LocalDateTime.parse(
-                                value,
-                                java.time.format.DateTimeFormatter.ofPattern(
-                                        "yyyy-MM-dd HH:mm:ss[.SSSSSS]")));
+                        java.time.LocalDateTime.parse(value, TIMESTAMP_FORMATTER));
             case 1082: // date
                 return (int) java.time.LocalDate.parse(value).toEpochDay();
             default:
@@ -709,6 +736,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         private String decodeStyle = "b";
         private boolean sendingBatch = false;
         private String sslMode = GaussDBCDCOptions.SSL_MODE.defaultValue();
+        private Integer replicationPort;
 
         public Builder hostname(String hostname) {
             this.hostname = hostname;
@@ -802,6 +830,11 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
         public Builder sslMode(String sslMode) {
             this.sslMode = sslMode;
+            return this;
+        }
+
+        public Builder replicationPort(Integer replicationPort) {
+            this.replicationPort = replicationPort;
             return this;
         }
 

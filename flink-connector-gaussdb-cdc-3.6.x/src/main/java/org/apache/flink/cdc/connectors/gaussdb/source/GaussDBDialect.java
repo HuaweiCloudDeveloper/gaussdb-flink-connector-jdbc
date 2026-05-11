@@ -118,6 +118,26 @@ public class GaussDBDialect implements JdbcDataSourceDialect {
             PostgresConnection jdbcConnection) {
         try {
             PostgresConnectorConfig pgConnectorConfig = sourceConfig.getDbzConnectorConfig();
+
+            // If a dedicated replication port is configured (e.g. GaussDB HA port when
+            // enable_thread_pool=on), derive a new PostgresConnectorConfig whose
+            // database.port is overridden. The regular JDBC connection (jdbcConnection)
+            // keeps using the main port for discovery/snapshot queries.
+            Integer replicationPort = sourceConfig.getReplicationPort();
+            if (replicationPort != null && replicationPort != sourceConfig.getPort()) {
+                io.debezium.config.Configuration replConfig =
+                        pgConnectorConfig
+                                .getConfig()
+                                .edit()
+                                .with("database.port", String.valueOf(replicationPort))
+                                .build();
+                pgConnectorConfig = new PostgresConnectorConfig(replConfig);
+                LOG.info(
+                        "Using dedicated replication port {} for GaussDB streaming (main JDBC port = {}).",
+                        replicationPort,
+                        sourceConfig.getPort());
+            }
+
             TopicSelector<TableId> topicSelector = PostgresTopicSelector.create(pgConnectorConfig);
             PostgresConnection.PostgresValueConverterBuilder valueConverterBuilder =
                     newPostgresValueConverterBuilder(pgConnectorConfig);

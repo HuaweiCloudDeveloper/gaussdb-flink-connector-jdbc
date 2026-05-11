@@ -60,6 +60,17 @@ public class GaussDBSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Sets the dedicated port for replication (streaming) connections. Useful for GaussDB with
+     * {@code enable_thread_pool=on}, where replication must go through the HA port (typically the
+     * main port + 1) while regular JDBC queries stay on the main port. If not set, replication uses
+     * the main port.
+     */
+    public GaussDBSourceBuilder<T> replicationPort(Integer replicationPort) {
+        this.configFactory.setReplicationPort(replicationPort);
+        return this;
+    }
+
     public GaussDBSourceBuilder<T> database(String database) {
         this.configFactory.database(database);
         return this;

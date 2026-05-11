@@ -70,6 +70,8 @@ public class GaussDBTableFactory implements DynamicTableSourceFactory {
         String schemaName = config.get(SCHEMA_NAME);
         String tableName = config.get(TABLE_NAME);
         int port = config.get(GaussDBSourceOptions.PORT);
+        Integer replicationPort =
+                config.getOptional(GaussDBSourceOptions.REPLICATION_PORT).orElse(null);
         String pluginName = config.get(GaussDBSourceOptions.DECODING_PLUGIN_NAME);
         String slotName = config.get(GaussDBSourceOptions.SLOT_NAME);
         DebeziumChangelogMode changelogMode = config.get(GaussDBSourceOptions.CHANGELOG_MODE);
@@ -157,7 +159,8 @@ public class GaussDBTableFactory implements DynamicTableSourceFactory {
                 parallelDecodeNum,
                 decodeStyle,
                 sendingBatch,
-                includeDatabaseInTableId);
+                includeDatabaseInTableId,
+                replicationPort);
     }
 
     @Override
@@ -182,6 +185,7 @@ public class GaussDBTableFactory implements DynamicTableSourceFactory {
     public Set<ConfigOption<?>> optionalOptions() {
         Set<ConfigOption<?>> options = new HashSet<>();
         options.add(GaussDBSourceOptions.PORT);
+        options.add(GaussDBSourceOptions.REPLICATION_PORT);
         options.add(GaussDBSourceOptions.DECODING_PLUGIN_NAME);
         options.add(GaussDBSourceOptions.CHANGELOG_MODE);
         options.add(JdbcSourceOptions.SCAN_STARTUP_MODE);

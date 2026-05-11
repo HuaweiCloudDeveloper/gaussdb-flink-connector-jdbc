@@ -34,6 +34,19 @@ public class GaussDBSourceOptions extends JdbcSourceOptions {
                     .defaultValue(8000)
                     .withDescription("Integer port number of the GaussDB database server.");
 
+    public static final ConfigOption<Integer> REPLICATION_PORT =
+            ConfigOptions.key("replication.port")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Optional port used exclusively for replication (streaming decode) connections. "
+                                    + "When GaussDB is running with 'enable_thread_pool=on', replication "
+                                    + "connections must go through the HA port (typically the normal port + 1), "
+                                    + "while normal gsql/JDBC queries are rejected on that port. "
+                                    + "If set, this port is used when opening replication connections; "
+                                    + "the 'port' option is still used for all other JDBC queries. "
+                                    + "If not set, the 'port' option is used for both.");
+
     public static final ConfigOption<String> DECODING_PLUGIN_NAME =
             ConfigOptions.key("decoding.plugin.name")
                     .stringType()

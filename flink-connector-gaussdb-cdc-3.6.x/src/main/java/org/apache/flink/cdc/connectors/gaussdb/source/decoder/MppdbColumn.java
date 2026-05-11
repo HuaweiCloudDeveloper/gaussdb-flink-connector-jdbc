@@ -22,9 +22,19 @@ import io.debezium.connector.postgresql.PostgresStreamingChangeEventSource;
 import io.debezium.connector.postgresql.PostgresType;
 import io.debezium.connector.postgresql.connection.ReplicationMessage.Column;
 import io.debezium.connector.postgresql.connection.ReplicationMessage.ColumnTypeMetadata;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import sun.misc.Unsafe;
 
 import java.lang.reflect.Field;
+import java.sql.Date;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.temporal.ChronoField;
 
 /**
  * Shared {@link Column} implementation for mppdb_decoding output.
@@ -33,6 +43,24 @@ import java.lang.reflect.Field;
  * (JSON format) or a type OID integer (binary format).
  */
 public class MppdbColumn implements Column {
+
+    private static final Logger LOG = LoggerFactory.getLogger(MppdbColumn.class);
+
+    /**
+     * Formatter accepting {@code yyyy-MM-dd HH:mm:ss} optionally followed by 0~9 fractional digits.
+     *
+     * <p>GaussDB's mppdb_decoding emits TIMESTAMP values as plain strings (e.g. {@code "2026-05-11
+     * 15:18:25.4848"}) with trailing zeros stripped, so the fractional portion may be any width
+     * from 0 to 9 digits. A fixed pattern such as {@code SSSSSS} fails for all other widths (same
+     * root cause as the CDC 2.4.x TIMESTAMP parse bug).
+     */
+    private static final DateTimeFormatter TIMESTAMP_FORMATTER =
+            new DateTimeFormatterBuilder()
+                    .appendPattern("yyyy-MM-dd HH:mm:ss")
+                    .optionalStart()
+                    .appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true)
+                    .optionalEnd()
+                    .toFormatter();
 
     private static final ColumnTypeMetadata EMPTY_COLUMN_TYPE_METADATA =
             new ColumnTypeMetadata() {
@@ -93,7 +121,34 @@ public class MppdbColumn implements Column {
         if (isNull) {
             return null;
         }
-        return value;
+        // Debezium's PostgresValueConverter for TIMESTAMP/TIMESTAMPTZ/DATE OIDs expects
+        // Java time objects (LocalDateTime / OffsetDateTime / LocalDate) or numeric micros
+        // rather than plain strings. mppdb_decoding emits these values as strings with
+        // variable-width trailing fractional seconds, so we pre-parse them here. Returning
+        // the raw string would cause Debezium to silently fall back to null (observed as
+        // 100% NULL TIMESTAMP values in downstream sinks).
+        try {
+            switch (typeOid) {
+                case 1114: // timestamp without time zone
+                    return LocalDateTime.parse(value, TIMESTAMP_FORMATTER);
+                case 1184: // timestamp with time zone
+                    return OffsetDateTime.of(
+                            LocalDateTime.parse(value, TIMESTAMP_FORMATTER), ZoneOffset.UTC);
+                case 1082: // date
+                    return Date.valueOf(LocalDate.parse(value));
+                default:
+                    return value;
+            }
+        } catch (Exception e) {
+            LOG.warn(
+                    "Failed to pre-parse column '{}' (oid={}) value='{}' for Debezium; "
+                            + "falling back to raw string. Reason: {}",
+                    name,
+                    typeOid,
+                    value,
+                    e.getMessage());
+            return value;
+        }
     }
 
     @Override

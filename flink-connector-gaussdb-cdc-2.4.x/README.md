@@ -18,6 +18,7 @@
 |------|--------|------|
 | `hostname` | 必填 | GaussDB 主机地址 |
 | `port` | 8000 | 端口 |
+| `replication.port` | （未设） | WAL 流式复制独立端口（HA 端口）。仅在 `wal.mode=true` 且 GaussDB `enable_thread_pool=on` 时必须设置为 HA 端口（通常为主端口+1，如 8001）。未设置时 replication 连接复用 `port`。 |
 | `database` | 必填 | 数据库名 |
 | `schema` | `public` | Schema |
 | `table-name` | 必填 | 监控的表名 |
@@ -56,6 +57,7 @@ CREATE TABLE student_cdc (
     'connector' = 'gaussdb-cdc',
     'hostname' = 'localhost',
     'port' = '8000',
+    'replication.port' = '8001',  -- 可选：当 GaussDB enable_thread_pool=on 时必须设置为 HA 端口
     'database' = 'test',
     'schema' = 'public',
     'table-name' = 'student',
@@ -83,6 +85,7 @@ CREATE TABLE student_cdc (
 GaussDBCDCSourceFunction source = GaussDBCDCSourceFunction.builder()
     .hostname("localhost")
     .port(8000)
+    .replicationPort(8001)   // 可选：enable_thread_pool=on 环境必填为 HA 端口
     .database("test")
     .schema("public")
     .tableName("student")
@@ -108,6 +111,34 @@ env.execute("GaussDB CDC Job");
 - 逻辑复制槽
 - 流式复制 API 需 gs_hba.conf 白名单 + enable_thread_pool=off 或 HA 端口
 - `parallel-decode-num=1` 时底层输出 JSON 格式（不支持 `decode-style='b'`），`decode-style` 和 `sending-batch` 仅在 `parallel-decode-num > 1` 时生效
+
+## GaussDB 线程池模式下的端口分离（replication.port）
+
+GaussDB 集中式实例开启 `enable_thread_pool=on` 后，端口协议被严格隔离：
+
+| 端口 | 协议 | 连接方式 |
+|------|------|---------|
+| 主端口（如 8000） | 仅普通 JDBC | `jdbc:gaussdb://host:8000/db` |
+| HA 端口（如 8001） | 仅 replication=database | `jdbc:gaussdb://host:8001/db?replication=database` |
+
+如果用 `wal.mode=true`（流式复制）但只配 `port=8000`，WAL 复制连接会被内核拒绝并报错：
+
+```
+FATAL: replication should connect HA port in thread_pool
+```
+
+**解决方式**：同时配置 `port` 和 `replication.port`：
+
+```sql
+'port' = '8000',              -- 主端口：Snapshot + 轮询 + SQL 函数
+'replication.port' = '8001',  -- HA 端口：仅用于 replication=database 流式复制
+```
+
+连接器会自动路由：
+- 全量快照、SQL 函数模式 → `port`（8000）
+- WAL 流式复制（`wal.mode=true` 时 `buildReplicationUrl` 自动重写 host:port）→ `replication.port`（8001）
+
+> 若 GaussDB `enable_thread_pool=off`（或使用分布式 CN 节点），主端口同时支持普通 JDBC 和 replication，**可省略 `replication.port`**。
 
 ## 注意事项
 
@@ -140,6 +171,7 @@ GaussDB 复制槽**同一时间只能被一个连接使用**。CDC 源表被多�
 | 增量同步捕获其他表变更 | WAL 解码捕获数据库所有表变更 | 添加目标表名过滤，跳过非目标表 | 类型转换错误不再发生 |
 | 轮询模式 `Column "xxx" does not exist` | `ChangeDataPoller` 硬编码了旧测试表的 7 个列名 | 改为通过 `DatabaseMetaData.getColumns()` 动态获取列名 | 轮询模式适配任意表结构 |
 | 不支持 `sslmode` 配置 | JDBC URL 硬编码 `sslmode=disable` | 新增 `sslmode` 选项，默认 `prefer` | 可配置 SSL 加密传输 |
+| TIMESTAMP 列解析失败 | `MppdbBinaryDecoder` 硬编码 `DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss[.SSSSSS]")` 要求小数部分恰好 6 位；GaussDB 会去除尾零（如 `.4848`、`.48497`），只要实际位数不是 6，就抛 `could not be parsed, unparsed text found at index 19` | 改用 `DateTimeFormatterBuilder + appendFraction(NANO_OF_SECOND, 0, 9, true)`，支持 0~9 位可变精度 | 50000 条流模式验证下 TIMESTAMP 零丢失（之前约 10% 失败） |
 
 ## Maven 依赖
 

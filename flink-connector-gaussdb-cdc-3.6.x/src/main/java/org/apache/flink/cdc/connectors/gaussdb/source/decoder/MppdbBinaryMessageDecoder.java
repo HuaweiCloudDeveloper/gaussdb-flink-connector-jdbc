@@ -236,6 +236,7 @@ public class MppdbBinaryMessageDecoder extends AbstractMessageDecoder {
             if (buf.remaining() < 4) {
                 break;
             }
+            int recordStartPos = buf.position();
             int totalSize = buf.getInt() & 0xFFFFFFFF;
             if (totalSize == 0) {
                 break;
@@ -247,6 +248,28 @@ public class MppdbBinaryMessageDecoder extends AbstractMessageDecoder {
             String lsnStr = "0x" + Long.toHexString(lsn);
             byte typeByte = buf.get();
 
+            // Compute the authoritative end-of-record position.
+            //
+            // <p>Each record in mppdb_decoding binary output is laid out as:
+            //   totalSize(4) + LSN(8) + type(1) + body(...) + separator(1)
+            //
+            // <p>The {@code totalSize} field does NOT include the trailing
+            // separator byte ('P' = more records, 'F' = end of batch).
+            // Therefore {@code bodyEndPos = recordStartPos + 4 + totalSize}
+            // points at the separator byte (or end-of-data).
+            //
+            // <p>Some per-type decoders (e.g. decodeBegin) do not consume the
+            // trailing separator; relying on each decoder to land exactly on
+            // the next record boundary causes cumulative misalignment and
+            // spurious "Unknown WAL record type" warnings (observed: 100%
+            // TIMESTAMP loss, decoder thrashing on 50k-row bursts).
+            //
+            // <p>To keep framing robust, we always realign {@code buf} to
+            // {@code bodyEndPos} after each record, then consume the
+            // separator byte uniformly here.
+            int bodyEndPos = recordStartPos + 4 + totalSize;
+            boolean endOfBatch = false;
+
             try {
                 ReplicationMessage msg = decodeRecord(buf, lsnStr, typeByte);
                 if (msg != null) {
@@ -254,11 +277,29 @@ public class MppdbBinaryMessageDecoder extends AbstractMessageDecoder {
                 }
             } catch (Exception e) {
                 LOG.warn("Failed to decode WAL record at LSN {}: {}", lsnStr, e.getMessage());
-                int bytesRead = 9;
-                int toSkip = totalSize - bytesRead;
-                if (toSkip > 0 && buf.remaining() >= toSkip) {
-                    buf.position(buf.position() + toSkip);
+            }
+
+            // Realign buffer position to exactly bodyEndPos, regardless of
+            // how many bytes the per-type decoder actually consumed.
+            if (bodyEndPos > data.length) {
+                // Truncated record; bail out to avoid reading past end.
+                break;
+            }
+            buf.position(bodyEndPos);
+
+            // Uniformly consume the separator byte if present.
+            if (buf.hasRemaining()) {
+                byte sep = data[bodyEndPos];
+                if (sep == SEPARATOR_MORE) {
+                    buf.position(bodyEndPos + 1);
+                } else if (sep == SEPARATOR_END) {
+                    buf.position(bodyEndPos + 1);
+                    endOfBatch = true;
                 }
+                // else: no separator here (batch boundary); leave buf as-is.
+            }
+            if (endOfBatch) {
+                break;
             }
         }
         return messages;

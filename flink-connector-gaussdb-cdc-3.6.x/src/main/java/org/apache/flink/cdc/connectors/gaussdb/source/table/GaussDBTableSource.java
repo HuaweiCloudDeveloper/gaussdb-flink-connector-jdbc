@@ -81,6 +81,7 @@ public class GaussDBTableSource implements ScanTableSource {
     private final String decodeStyle;
     private final boolean sendingBatch;
     private final boolean includeDatabaseInTableId;
+    @Nullable private final Integer replicationPort;
 
     // Mutable attributes
     protected org.apache.flink.table.types.DataType producedDataType;
@@ -119,7 +120,8 @@ public class GaussDBTableSource implements ScanTableSource {
             int parallelDecodeNum,
             String decodeStyle,
             boolean sendingBatch,
-            boolean includeDatabaseInTableId) {
+            boolean includeDatabaseInTableId,
+            @Nullable Integer replicationPort) {
         this.physicalSchema = physicalSchema;
         this.port = port;
         this.hostname = checkNotNull(hostname);
@@ -155,6 +157,7 @@ public class GaussDBTableSource implements ScanTableSource {
         this.decodeStyle = decodeStyle;
         this.sendingBatch = sendingBatch;
         this.includeDatabaseInTableId = includeDatabaseInTableId;
+        this.replicationPort = replicationPort;
     }
 
     @Override
@@ -187,6 +190,7 @@ public class GaussDBTableSource implements ScanTableSource {
                 GaussDBSourceBuilder.GaussDBIncrementalSource.<RowData>builder()
                         .hostname(hostname)
                         .port(port)
+                        .replicationPort(replicationPort)
                         .database(database)
                         .schemaList(schemaName)
                         .tableList(schemaName + "." + tableName)
@@ -255,7 +259,8 @@ public class GaussDBTableSource implements ScanTableSource {
                         parallelDecodeNum,
                         decodeStyle,
                         sendingBatch,
-                        includeDatabaseInTableId);
+                        includeDatabaseInTableId,
+                        replicationPort);
         source.metadataKeys = metadataKeys;
         source.producedDataType = producedDataType;
         return source;
@@ -304,7 +309,8 @@ public class GaussDBTableSource implements ScanTableSource {
                 && Objects.equals(parallelDecodeNum, that.parallelDecodeNum)
                 && Objects.equals(decodeStyle, that.decodeStyle)
                 && Objects.equals(sendingBatch, that.sendingBatch)
-                && Objects.equals(includeDatabaseInTableId, that.includeDatabaseInTableId);
+                && Objects.equals(includeDatabaseInTableId, that.includeDatabaseInTableId)
+                && Objects.equals(replicationPort, that.replicationPort);
     }
 
     @Override
@@ -344,7 +350,8 @@ public class GaussDBTableSource implements ScanTableSource {
                 parallelDecodeNum,
                 decodeStyle,
                 sendingBatch,
-                includeDatabaseInTableId);
+                includeDatabaseInTableId,
+                replicationPort);
     }
 
     @Override

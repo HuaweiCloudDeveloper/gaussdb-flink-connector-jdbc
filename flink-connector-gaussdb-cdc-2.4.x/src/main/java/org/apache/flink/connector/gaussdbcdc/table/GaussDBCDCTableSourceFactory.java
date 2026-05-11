@@ -56,6 +56,7 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
     public Set<ConfigOption<?>> optionalOptions() {
         Set<ConfigOption<?>> options = new HashSet<>();
         options.add(GaussDBCDCOptions.PORT);
+        options.add(GaussDBCDCOptions.REPLICATION_PORT);
         options.add(GaussDBCDCOptions.SCHEMA);
         options.add(GaussDBCDCOptions.SLOT_NAME);
         options.add(GaussDBCDCOptions.PLUGIN_NAME);
@@ -82,6 +83,7 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
 
         String hostname = config.get(GaussDBCDCOptions.HOSTNAME);
         int port = config.get(GaussDBCDCOptions.PORT);
+        Integer replicationPort = config.get(GaussDBCDCOptions.REPLICATION_PORT);
         String database = config.get(GaussDBCDCOptions.DATABASE);
         String schema = config.get(GaussDBCDCOptions.SCHEMA);
         String tableName = config.get(GaussDBCDCOptions.TABLE_NAME);
@@ -120,6 +122,7 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
                 decodeStyle,
                 sendingBatch,
                 sslMode,
+                replicationPort,
                 physicalRowDataType);
     }
 }

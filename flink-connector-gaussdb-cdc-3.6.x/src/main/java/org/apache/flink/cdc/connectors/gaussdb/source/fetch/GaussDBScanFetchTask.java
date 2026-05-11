@@ -83,6 +83,8 @@ public class GaussDBScanFetchTask extends AbstractScanFetchTask {
         } finally {
             maybeDropSlotForBackFillReadTask(
                     (PostgresReplicationConnection) ctx.getReplicationConnection(),
+                    ctx.getConnection(),
+                    sourceConfig.getSlotNameForBackfillTask(),
                     sourceConfig.isSkipSnapshotBackfill());
         }
     }
@@ -206,13 +208,29 @@ public class GaussDBScanFetchTask extends AbstractScanFetchTask {
     }
 
     private void maybeDropSlotForBackFillReadTask(
-            PostgresReplicationConnection replicationConnection, boolean skipSnapshotBackfill) {
+            PostgresReplicationConnection replicationConnection,
+            PostgresConnection jdbcConnection,
+            String slotName,
+            boolean skipSnapshotBackfill) {
         if (skipSnapshotBackfill) {
             return;
         }
 
+        // Drop the backfill replication slot via the main JDBC connection (which uses the
+        // regular port). Debezium's PostgresReplicationConnection.close(true) would try to
+        // build a plain JDBC connection using the replication connector config, whose port
+        // may be the dedicated replication/HA port (e.g. GaussDB's 8001). The HA port
+        // rejects plain gsql connections ("not for the gsql client"), so we perform the
+        // DROP SLOT manually on the main-port connection, then close the replication
+        // connection without dropping.
         try {
-            replicationConnection.close(true);
+            try {
+                jdbcConnection.dropReplicationSlot(slotName);
+            } catch (Throwable t) {
+                LOG.warn(
+                        "Failed to drop replication slot {} via main JDBC connection", slotName, t);
+            }
+            replicationConnection.close(false);
         } catch (Throwable t) {
             LOG.error("Unexpected error while dropping replication slot", t);
             throw new FlinkRuntimeException(t);

@@ -20,7 +20,8 @@
 | 参数 | 是否必填 | 默认值 | 可选值 | 说明 |
 |------|---------|--------|--------|------|
 | `hostname` | ✅ | — | — | GaussDB 主机地址 |
-| `port` | ❌ | `8000` | 1~65535 | GaussDB 端口 |
+| `port` | ❌ | `8000` | 1~65535 | GaussDB 主业务端口（普通 JDBC 连接、表发现、快照、slot 元数据查询、心跳等均走此端口） |
+| `replication.port` | ❌ | 同 `port` | 1~65535 | 逻辑复制（WAL 流式捕获）专用端口。仅在 GaussDB 启用 `enable_thread_pool=on` 导致协议按端口分离（主业务端口禁 replication、HA 端口禁普通 JDBC）时才需要显式设置，指向 HA（replication）监听端口（常见为主业务端口 + 1，例如主 `8000`、复制 `8001`）。未设置时与 `port` 相同 |
 | `database-name` | ✅ | — | — | 数据库名 |
 | `schema-name` | ❌ | `public` | — | Schema 名 |
 | `table-name` | ✅ | — | — | 监控的表名，支持正则匹配多表（如 `public\.user_.*`） |
@@ -75,6 +76,28 @@ CDC 3.6.x 基于 Debezium，任何 Debezium PostgreSQL Connector 支持的参数
 
 > **注意**：CDC 3.6.x **没有 `walmode` 参数**（CDC 2.4.x 中用于切换 WAL/轮询模式）。CDC 3.6.x 始终使用 WAL 逻辑解码，不支持轮询模式。
 
+### GaussDB 线程池模式下的端口分离（replication.port）
+
+当 GaussDB 实例启用 `enable_thread_pool=on` 时，协议会按端口隔离：
+
+- **主业务端口**（例如 `8000`）：仅接受普通 `gsql/JDBC` 客户端连接，拒绝 replication 协议连接，错误示例：
+  `FATAL: replication should connect HA port in thread_pool`
+- **HA / replication 端口**（例如 `8001`）：仅接受带 `replication=database` 的连接，拒绝普通 `gsql/JDBC` 客户端连接，错误示例：
+  `FATAL: the local listen ip and port is not for the gsql client`
+
+此时必须在 CDC 配置里同时指定两个端口，否则 snapshot 或 stream 任一阶段会因端口协议不匹配而失败：
+
+```sql
+'port'             = '8000',  -- 主业务端口：表发现 / snapshot / slot 元数据 / drop slot / 心跳
+'replication.port' = '8001'   -- HA 端口：WAL 流式复制（START_REPLICATION）
+```
+
+Connector 运行时会自动路由：
+- `snapshot` 阶段、`discoverDataCollections`、`readReplicationSlotInfo`、`maybeDropSlotForBackFillReadTask`、heartbeat → `port`
+- Debezium `PostgresReplicationConnection.startStreaming` / `CREATE_REPLICATION_SLOT` / `IDENTIFY_SYSTEM` / `START_REPLICATION` → `replication.port`
+
+若 GaussDB 未启用线程池（单端口同时支持两种协议），省略 `replication.port` 即可，默认与 `port` 相同。
+
 ### 完整参数示例（Flink SQL）
 
 ```sql
@@ -88,6 +111,8 @@ CREATE TABLE student_cdc (
     'connector' = 'gaussdb-cdc',
     'hostname' = 'localhost',
     'port' = '8000',
+    -- 仅 enable_thread_pool=on 时需要，指向 HA/replication 端口
+    'replication.port' = '8001',
     'database-name' = 'test',
     'schema-name' = 'public',
     'table-name' = 'student',
@@ -179,6 +204,8 @@ import org.apache.flink.cdc.debezium.JsonDebeziumDeserializationSchema;
 GaussDBSource<String> source = GaussDBSource.<String>builder()
     .hostname("localhost")
     .port(8000)
+    // 仅 enable_thread_pool=on 时需要；未调用时与 port 相同
+    .replicationPort(8001)
     .databaseList("test")
     .schemaList("public")
     .tableList("test.student")
@@ -246,7 +273,7 @@ env.execute("GaussDB CDC Job");
 
 **测试环境**：Flink 1.20.3（1 TaskManager），GaussDB 单节点，Sink=Print。
 
-### Binary 解码器说明
+## Binary 解码器说明
 
 `decode-style=b`（Binary）模式下，Connector 使用自定义的 `MppdbBinaryMessageDecoder` 解析 mppdb_decoding 的二进制 WAL 输出：
 
@@ -254,6 +281,13 @@ env.execute("GaussDB CDC Job");
 - 支持完整的 INSERT / UPDATE / DELETE 事件捕获
 - `parallel-decode-num` 和 `decode-style` 参数通过 `slot.stream.params` 自动传递给 GaussDB 复制协议
 - **REPLICA IDENTITY**：DELETE 和 UPDATE 的 before image 取决于表的 REPLICA IDENTITY 设置（DEFAULT 仅含主键列，FULL 含全部列）
+
+## 已知问题与修复记录
+
+| 问题 | 根因 | 修复 | 影响 |
+|------|------|------|------|
+| Binary 模式下大量 `Unknown WAL record type` WARN，TIMESTAMP 全为 null，消费吞吐骤降（5 万条流式场景下 113s 仅消费到 26716 行） | `MppdbBinaryMessageDecoder.decodeBatch` 不使用 `totalSize` 字段强制对齐下一条记录边界，完全依赖各 `decodeXxx` 方法自身读到末尾；但 `decodeBegin/Commit` 不消费尾部 `P`/`F` 分隔符，一次错位即触发整批级联错位，后续把时间戳字符串字节（如 `0x32362d30352d3131` = ASCII `"26-05-11"`）误当 LSN/record header 解析 | 在 `decodeBatch` while 循环中用 `recordStartPos + 4 + totalSize` 计算 `bodyEndPos`，无论各子解码器读了多少都强制 `buf.position(bodyEndPos)` 重对齐，再在 batch 层统一消费 `P`/`F` 分隔符（参照 2.4.x `MppdbBinaryDecoder` 实现） | 5 万条流模式验证下 Unknown WAL WARN 归零，数据 0 丢失 |
+| TIMESTAMP 字段 100% 变 null（无任何 ERROR/WARN） | `MppdbColumn.getValue()` 对所有类型统一返回原始字符串；Debezium `PostgresValueConverter` 对 TIMESTAMP(1114)/TIMESTAMPTZ(1184)/DATE(1082) 期望 `LocalDateTime`/`OffsetDateTime`/`LocalDate` 等 Java 时间对象或 Long 微秒数，传入字符串（如 `"2026-05-11 15:30:07.4848"`）时静默 fallback 为 null | 在 `MppdbColumn.getValue()` 中按 `typeOid` 预解析：TIMESTAMP → `LocalDateTime.parse`，TIMESTAMPTZ → `OffsetDateTime`，DATE → `Date.valueOf(LocalDate.parse)`；formatter 使用 `DateTimeFormatterBuilder + appendFraction(NANO_OF_SECOND, 0, 9, true)`，兼容 GaussDB 尾零裁剪产生的 0~9 位可变小数精度（避开 2.4.x `SSSSSS` 同款硬位数陷阱） | 5 万条流模式验证下 TIMESTAMP 微秒精度正确，0 null 0 parse fail |
 
 ## 测试
 

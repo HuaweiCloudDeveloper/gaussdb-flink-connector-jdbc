@@ -121,6 +121,10 @@ public class GaussDBQueryUtils {
                         }
                     }
                 });
+        LOG.debug(
+                "listTables for database={} discovered {} matching tables",
+                database,
+                tableIds.size());
         return tableIds;
     }
 

@@ -126,25 +126,53 @@ public class GaussDBSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
         LOG.debug("Configuring GaussDBSourceFetchTaskContext for split: {}", sourceSplitBase);
         PostgresConnectorConfig dbzConfig = getDbzConnectorConfig();
 
+        // If a dedicated replication port is configured (e.g. GaussDB HA port when
+        // enable_thread_pool=on), override database.port so that taskContext and
+        // replicationConnection built below use the replication port, while regular
+        // JDBC queries keep using the main port (via sourceConfig.jdbcConfig).
+        Integer replicationPort = ((GaussDBSourceConfig) sourceConfig).getReplicationPort();
+        boolean needReplicationPortOverride =
+                replicationPort != null && replicationPort.intValue() != sourceConfig.getPort();
+
+        // Register the main business port as a JVM-wide override for plain JDBC
+        // PostgresConnection instances. This ensures Debezium's
+        // PostgresReplicationConnection internals (getSlotInfo, close->Debezium Drop Slot,
+        // heartbeat, etc.) that internally do `new
+        // PostgresConnection(connectorConfig.getJdbcConfig())`
+        // with the HA port get rewritten to the main port, which is the only port that
+        // accepts non-replication JDBC traffic under GaussDB enable_thread_pool=on.
+        // The replication stream on PostgresReplicationConnection itself keeps using the HA
+        // port (it applies its own addDefaultSettings independently).
+        if (needReplicationPortOverride) {
+            PostgresConnection.setMainJdbcPortOverride(sourceConfig.getPort());
+        } else {
+            PostgresConnection.setMainJdbcPortOverride(null);
+        }
+
         if (sourceSplitBase instanceof SnapshotSplit) {
-            dbzConfig =
-                    new PostgresConnectorConfig(
-                            dbzConfig
-                                    .getConfig()
-                                    .edit()
-                                    .with(
-                                            "table.include.list",
-                                            getTableList(
-                                                    ((SnapshotSplit) sourceSplitBase).getTableId()))
-                                    .with(
-                                            SLOT_NAME.name(),
-                                            ((GaussDBSourceConfig) sourceConfig)
-                                                    .getSlotNameForBackfillTask())
-                                    // drop slot for backfill stream split
-                                    .with(DROP_SLOT_ON_STOP.name(), true)
-                                    // Disable heartbeat event in snapshot split fetcher
-                                    .with(Heartbeat.HEARTBEAT_INTERVAL, 0)
-                                    .build());
+            io.debezium.config.Configuration.Builder snapshotBuilder =
+                    dbzConfig
+                            .getConfig()
+                            .edit()
+                            .with(
+                                    "table.include.list",
+                                    getTableList(((SnapshotSplit) sourceSplitBase).getTableId()))
+                            .with(
+                                    SLOT_NAME.name(),
+                                    ((GaussDBSourceConfig) sourceConfig)
+                                            .getSlotNameForBackfillTask())
+                            // drop slot for backfill stream split
+                            .with(DROP_SLOT_ON_STOP.name(), true)
+                            // Disable heartbeat event in snapshot split fetcher
+                            .with(Heartbeat.HEARTBEAT_INTERVAL, 0);
+            if (needReplicationPortOverride) {
+                snapshotBuilder.with("database.port", String.valueOf(replicationPort));
+                LOG.info(
+                        "Using dedicated replication port {} for GaussDB streaming (main JDBC port = {}) in snapshot split.",
+                        replicationPort,
+                        sourceConfig.getPort());
+            }
+            dbzConfig = new PostgresConnectorConfig(snapshotBuilder.build());
         } else {
             io.debezium.config.Configuration.Builder builder = dbzConfig.getConfig().edit();
             if (isBackFillSplit(sourceSplitBase)) {
@@ -157,6 +185,13 @@ public class GaussDBSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
                                         .keySet()
                                         .iterator()
                                         .next()));
+            }
+            if (needReplicationPortOverride) {
+                builder.with("database.port", String.valueOf(replicationPort));
+                LOG.info(
+                        "Using dedicated replication port {} for GaussDB streaming (main JDBC port = {}) in stream split.",
+                        replicationPort,
+                        sourceConfig.getPort());
             }
             dbzConfig =
                     new PostgresConnectorConfig(
