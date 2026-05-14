@@ -74,7 +74,7 @@ Flink GaussDB JDBC Connector 1.17 是专为 Apache Flink 1.17 版本设计的 Ga
    - `flink-connector-jdbc-3.1.2-1.17.jar`
 
 3. **GaussDB Connector** (必选，已内置 GaussDB JDBC 驱动)
-   - `flink-connector-jdbc-gaussdb-1.17-4.0-SNAPSHOT.jar`
+   - `flink-connector-jdbc-gaussdb-1.17-3.3.0-1.20.jar`
 
 > **说明**：Connector jar 已通过 maven-shade-plugin 内置 `gaussdbjdbc-506.0.0.b058-jdk7`（兼容 JDK 8/11），无需单独部署 GaussDB JDBC 驱动。
 
@@ -86,7 +86,7 @@ Flink GaussDB JDBC Connector 1.17 是专为 Apache Flink 1.17 版本设计的 Ga
 - MRS 集群必须已安装 `flink-connector-base` 和 `flink-connector-jdbc` 组件（MRS 管理界面中勾选安装即可）
 - `flink-connector-base` 为 Flink 框架 `provided` 依赖，由 MRS 的 Flink 运行时自动加载
 - `flink-connector-jdbc` 为 JDBC 连接器基础包，MRS 安装后自动放入 `lib/` 目录
-- 只需将 `flink-connector-jdbc-gaussdb-1.17-4.0-SNAPSHOT.jar` 放入 MRS 的 lib 目录（已内置 GaussDB JDBC 驱动）
+- 只需将 `flink-connector-jdbc-gaussdb-1.17-3.3.0-1.20.jar` 放入 MRS 的 lib 目录（已内置 GaussDB JDBC 驱动）
 
 ### Maven 依赖
 
@@ -94,7 +94,7 @@ Flink GaussDB JDBC Connector 1.17 是专为 Apache Flink 1.17 版本设计的 Ga
 <dependency>
     <groupId>com.huaweicloud.gaussdb.flink</groupId>
     <artifactId>flink-connector-jdbc-gaussdb-1.17</artifactId>
-    <version>4.0-SNAPSHOT</version>
+    <version>3.3.0-1.20</version>
 </dependency>
 ```
 
@@ -110,7 +110,7 @@ cp flink-connector-base-1.17.2.jar $FLINK_HOME/lib/
 cp flink-connector-jdbc-3.1.2-1.17.jar $FLINK_HOME/lib/
 
 # 3. GaussDB Connector（必须，已内置 GaussDB JDBC 驱动）
-cp flink-connector-jdbc-gaussdb-1.17-4.0-SNAPSHOT.jar $FLINK_HOME/lib/
+cp flink-connector-jdbc-gaussdb-1.17-3.3.0-1.20.jar $FLINK_HOME/lib/
 ```
 
 重启 Flink：
@@ -176,7 +176,7 @@ mvn clean package -pl flink-connector-jdbc-gaussdb-1.17 -am -DskipTests
 打包后产物：
 ```
 flink-connector-jdbc-gaussdb-1.17/target/
-└── flink-connector-jdbc-gaussdb-1.17-4.0-SNAPSHOT.jar   (~1.6 MB，已内置驱动)
+└── flink-connector-jdbc-gaussdb-1.17-3.3.0-1.20.jar   (~1.6 MB，已内置驱动)
 ```
 
 ### 瘦包打包（不内置驱动）
@@ -215,7 +215,7 @@ mvn clean package -pl flink-connector-jdbc-gaussdb-1.17 -am -DskipTests
 打包后产物：
 ```
 flink-connector-jdbc-gaussdb-1.17/target/
-└── flink-connector-jdbc-gaussdb-1.17-4.0-SNAPSHOT.jar   (~60 KB，不含驱动)
+└── flink-connector-jdbc-gaussdb-1.17-3.3.0-1.20.jar   (~60 KB，不含驱动)
 ```
 
 **瘦包部署时**，需将 GaussDB JDBC 驱动单独放入 Flink `lib/` 目录：

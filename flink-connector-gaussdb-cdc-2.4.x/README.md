@@ -42,7 +42,7 @@
 ### 部署 JAR 包
 
 ```bash
-cp flink-connector-gaussdb-cdc-2.4.x-4.0-SNAPSHOT.jar $FLINK_HOME/lib/
+cp flink-connector-gaussdb-cdc-2.4.x-3.3.0-1.20.jar $FLINK_HOME/lib/
 ```
 
 ### Flink SQL 使用
@@ -179,7 +179,7 @@ GaussDB 复制槽**同一时间只能被一个连接使用**。CDC 源表被多�
 <dependency>
     <groupId>com.huaweicloud.gaussdb.flink</groupId>
     <artifactId>flink-connector-gaussdb-cdc-2.4.x</artifactId>
-    <version>4.0-SNAPSHOT</version>
+    <version>3.3.0-1.20</version>
 </dependency>
 ```
 

@@ -235,7 +235,7 @@ env.execute("GaussDB CDC Job");
 <dependency>
     <groupId>com.huaweicloud.gaussdb.flink</groupId>
     <artifactId>flink-connector-gaussdb-cdc-3.6.x</artifactId>
-    <version>4.0-SNAPSHOT</version>
+    <version>3.3.0-1.20</version>
 </dependency>
 ```
 

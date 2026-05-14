@@ -134,7 +134,7 @@ GaussDB CDC Connector 已内置 GaussDB JDBC 驱动，部署时只需以下 JAR 
    - `flink-connector-base-1.17.2.jar`
 
 2. **GaussDB CDC Connector** (必选，已包含 JDBC 驱动)
-   - `flink-connector-gaussdb-cdc-1.17-4.0-SNAPSHOT.jar`
+   - `flink-connector-gaussdb-cdc-1.17-3.3.0-1.20.jar`
 
 > **说明**：Connector jar 已通过 maven-shade-plugin 内置以下依赖，无需单独部署：
 > - `gaussdbjdbc-506.0.0.b058-jdk7.jar`（GaussDB JDBC 驱动，兼容 JDK 8/11，支持流式复制 API）
@@ -145,7 +145,7 @@ GaussDB CDC Connector 已内置 GaussDB JDBC 驱动，部署时只需以下 JAR 
 <dependency>
     <groupId>com.huaweicloud.gaussdb.flink</groupId>
     <artifactId>flink-connector-gaussdb-cdc-1.17</artifactId>
-    <version>4.0-SNAPSHOT</version>
+    <version>3.3.0-1.20</version>
 </dependency>
 ```
 
@@ -158,7 +158,7 @@ GaussDB CDC Connector 已内置 GaussDB JDBC 驱动，部署时只需以下 JAR 
 cp flink-connector-base-1.17.2.jar $FLINK_HOME/lib/
 
 # 2. GaussDB CDC Connector（已内置 GaussDB JDBC 驱动）
-cp flink-connector-gaussdb-cdc-1.17-4.0-SNAPSHOT.jar $FLINK_HOME/lib/
+cp flink-connector-gaussdb-cdc-1.17-3.3.0-1.20.jar $FLINK_HOME/lib/
 ```
 
 重启 Flink：
@@ -685,7 +685,7 @@ A: 修改模块 `pom.xml` 中的驱动版本属性，然后重新打包即可：
 2. 重新打包并部署：
 ```bash
 mvn clean package -pl flink-connector-gaussdb-cdc-1.17 -DskipTests -Dcheckstyle.skip=true
-cp flink-connector-gaussdb-cdc-1.17/target/flink-connector-gaussdb-cdc-1.17-4.0-SNAPSHOT.jar $FLINK_HOME/lib/
+cp flink-connector-gaussdb-cdc-1.17/target/flink-connector-gaussdb-cdc-1.17-3.3.0-1.20.jar $FLINK_HOME/lib/
 # 重启 Flink 集群
 ```
 

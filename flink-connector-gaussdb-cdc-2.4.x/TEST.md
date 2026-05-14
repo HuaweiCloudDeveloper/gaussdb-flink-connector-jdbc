@@ -4,7 +4,7 @@
 
 - **Flink 版本**: 1.17.2
 - **GaussDB 版本**: 506.0.0.b058
-- **CDC Connector**: flink-connector-gaussdb-cdc-2.4.x-4.0-SNAPSHOT.jar
+- **CDC Connector**: flink-connector-gaussdb-cdc-2.4.x-3.3.0-1.20.jar
 - **GaussDB 驱动**: gaussdbjdbc-506.0.0.b058.jar（内置）
 
 ## 前置条件
@@ -49,7 +49,7 @@ INSERT INTO test_cdc.flink_cdc_test (name, age) VALUES ('Bob', 25);
 ### 3. Flink 部署
 
 ```bash
-cp flink-connector-gaussdb-cdc-2.4.x-4.0-SNAPSHOT.jar $FLINK_HOME/lib/
+cp flink-connector-gaussdb-cdc-2.4.x-3.3.0-1.20.jar $FLINK_HOME/lib/
 $FLINK_HOME/bin/stop-cluster.sh
 sleep 3
 $FLINK_HOME/bin/start-cluster.sh
