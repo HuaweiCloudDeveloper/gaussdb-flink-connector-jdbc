@@ -52,6 +52,21 @@ public class GaussdbMetadata implements DatabaseMetadata {
         this.xaEnabled = hasXaEnabled;
     }
 
+    public GaussdbMetadata(
+            String username,
+            String password,
+            String url,
+            String driver,
+            String version,
+            boolean hasXaEnabled) {
+        this.username = username;
+        this.password = password;
+        this.url = url;
+        this.driver = driver;
+        this.version = version;
+        this.xaEnabled = hasXaEnabled;
+    }
+
     @Override
     public String getJdbcUrl() {
         return this.url;

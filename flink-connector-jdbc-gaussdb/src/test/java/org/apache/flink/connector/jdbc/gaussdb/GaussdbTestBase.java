@@ -22,18 +22,19 @@ import org.apache.flink.connector.jdbc.gaussdb.testutils.GaussdbDatabase;
 import org.apache.flink.connector.jdbc.testutils.DatabaseMetadata;
 import org.apache.flink.connector.jdbc.testutils.DatabaseTest;
 
-import org.junit.jupiter.api.extension.ExtendWith;
-
-/**
- * Base class for Postgres testing.
- *
- * <p>Notes: The source code is based on PostgresTestBase.
- */
-@ExtendWith(GaussdbDatabase.class)
+/** Base class for Postgres testing. */
 public interface GaussdbTestBase extends DatabaseTest {
+
+    String USERNAME = "flink_jdbc_test";
+    String PASSWORD = "Flink_jdbc_test@123";
+    String DB_NAME = "postgres";
+    String URL = "jdbc:gaussdb://127.0.0.1:5432/" + DB_NAME;
+    String DRIVER = "com.huawei.gaussdb.jdbc.Driver";
+    String VERSION = "506";
 
     @Override
     default DatabaseMetadata getMetadata() {
+        //        return new GaussdbMetadata(USERNAME, PASSWORD, URL, DRIVER, VERSION, false);
         return GaussdbDatabase.getMetadata();
     }
 }
