@@ -7,7 +7,7 @@
     <parent>
         <groupId>com.huaweicloud.gaussdb.flink</groupId>
         <artifactId>flink-connector-jdbc-gaussdb-parent</artifactId>
-        <version>4.0-SNAPSHOT</version>
+        <version>3.3.0-1.20</version>
     </parent>
 
     <artifactId>flink-connector-gaussdb-cdc-1.17</artifactId>
