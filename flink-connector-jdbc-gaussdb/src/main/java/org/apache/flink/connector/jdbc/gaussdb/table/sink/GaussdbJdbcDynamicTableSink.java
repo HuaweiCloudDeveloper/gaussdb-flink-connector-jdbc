@@ -25,8 +25,10 @@ import org.apache.flink.connector.jdbc.internal.GenericJdbcSinkFunction;
 import org.apache.flink.connector.jdbc.internal.options.InternalJdbcConnectionOptions;
 import org.apache.flink.connector.jdbc.internal.options.JdbcDmlOptions;
 import org.apache.flink.table.connector.ChangelogMode;
+import org.apache.flink.table.connector.RowLevelModificationScanContext;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkFunctionProvider;
+import org.apache.flink.table.connector.sink.abilities.SupportsRowLevelDelete;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.RowKind;
 
@@ -36,7 +38,7 @@ import static org.apache.flink.util.Preconditions.checkState;
 
 /** A {@link DynamicTableSink} for JDBC. */
 @Internal
-public class GaussdbJdbcDynamicTableSink implements DynamicTableSink {
+public class GaussdbJdbcDynamicTableSink implements DynamicTableSink, SupportsRowLevelDelete {
 
     private final InternalJdbcConnectionOptions jdbcOptions;
     private final JdbcExecutionOptions executionOptions;
@@ -98,6 +100,17 @@ public class GaussdbJdbcDynamicTableSink implements DynamicTableSink {
                 dmlOptions,
                 gaussdbExtendOptions,
                 physicalRowDataType);
+    }
+
+    @Override
+    public RowLevelDeleteInfo applyRowLevelDelete(RowLevelModificationScanContext context) {
+        validatePrimaryKey(ChangelogMode.all());
+        return new RowLevelDeleteInfo() {
+            @Override
+            public RowLevelDeleteMode getRowLevelDeleteMode() {
+                return RowLevelDeleteMode.DELETED_ROWS;
+            }
+        };
     }
 
     @Override

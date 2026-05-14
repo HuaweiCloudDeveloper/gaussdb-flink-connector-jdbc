@@ -28,6 +28,7 @@ public class GaussdbUpsertStatementExecutor implements JdbcBatchStatementExecuto
     private Connection connection;
     private FieldNamedPreparedStatement updateStatement;
     private JdbcDialectConverter updateSetter;
+    private final LogicalType[] fieldTypes;
 
     public GaussdbUpsertStatementExecutor(
             JdbcDmlOptions opt, GaussdbExtendOptions ept, LogicalType[] fieldTypes) {
@@ -36,6 +37,7 @@ public class GaussdbUpsertStatementExecutor implements JdbcBatchStatementExecuto
         this.fieldNames = opt.getFieldNames();
         this.keyFields = opt.getKeyFields().orElse(null);
         this.options = ept;
+        this.fieldTypes = fieldTypes;
         this.updateSetter = dialect.getRowConverter(RowType.of(fieldTypes));
     }
 
@@ -46,7 +48,7 @@ public class GaussdbUpsertStatementExecutor implements JdbcBatchStatementExecuto
 
     @Override
     public void addToBatch(RowData rowData) throws SQLException {
-        GenericRowData genericRowData = (GenericRowData) rowData;
+        GenericRowData genericRowData = toGenericRowData(rowData);
         String[] newFieldNames;
         if (options.isIgnoreNullWhenUpdate()) {
             Map<String, GaussdbFieldObject> indexFieldData = new LinkedHashMap<>();
@@ -82,5 +84,21 @@ public class GaussdbUpsertStatementExecutor implements JdbcBatchStatementExecuto
         if (updateStatement != null) {
             updateStatement.close();
         }
+    }
+
+    /** Convert any RowData implementation (BinaryRowData, etc.) to GenericRowData. */
+    private GenericRowData toGenericRowData(RowData rowData) {
+        if (rowData instanceof GenericRowData) {
+            return (GenericRowData) rowData;
+        }
+        GenericRowData result = new GenericRowData(rowData.getArity());
+        for (int i = 0; i < rowData.getArity(); i++) {
+            if (!rowData.isNullAt(i)) {
+                RowData.FieldGetter getter = RowData.createFieldGetter(fieldTypes[i], i);
+                result.setField(i, getter.getFieldOrNull(rowData));
+            }
+        }
+        result.setRowKind(rowData.getRowKind());
+        return result;
     }
 }
