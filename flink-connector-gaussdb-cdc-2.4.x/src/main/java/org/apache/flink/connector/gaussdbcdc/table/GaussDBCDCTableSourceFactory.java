@@ -56,6 +56,7 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
     public Set<ConfigOption<?>> optionalOptions() {
         Set<ConfigOption<?>> options = new HashSet<>();
         options.add(GaussDBCDCOptions.PORT);
+        options.add(GaussDBCDCOptions.REPLICATION_PORT);
         options.add(GaussDBCDCOptions.SCHEMA);
         options.add(GaussDBCDCOptions.SLOT_NAME);
         options.add(GaussDBCDCOptions.PLUGIN_NAME);
@@ -68,6 +69,7 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
         options.add(GaussDBCDCOptions.PARALLEL_DECODE_NUM);
         options.add(GaussDBCDCOptions.DECODE_STYLE);
         options.add(GaussDBCDCOptions.SENDING_BATCH);
+        options.add(GaussDBCDCOptions.SSL_MODE);
         return options;
     }
 
@@ -81,6 +83,7 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
 
         String hostname = config.get(GaussDBCDCOptions.HOSTNAME);
         int port = config.get(GaussDBCDCOptions.PORT);
+        Integer replicationPort = config.get(GaussDBCDCOptions.REPLICATION_PORT);
         String database = config.get(GaussDBCDCOptions.DATABASE);
         String schema = config.get(GaussDBCDCOptions.SCHEMA);
         String tableName = config.get(GaussDBCDCOptions.TABLE_NAME);
@@ -94,8 +97,13 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
         int parallelDecodeNum = config.get(GaussDBCDCOptions.PARALLEL_DECODE_NUM);
         String decodeStyle = config.get(GaussDBCDCOptions.DECODE_STYLE);
         boolean sendingBatch = config.get(GaussDBCDCOptions.SENDING_BATCH);
+        String sslMode = config.get(GaussDBCDCOptions.SSL_MODE);
 
-        DataType physicalRowDataType = context.getPhysicalRowDataType();
+        // Use getCatalogTable().getResolvedSchema().toPhysicalRowDataType() instead of
+        // context.getPhysicalRowDataType() for Flink 1.13~1.14 compatibility.
+        // getPhysicalRowDataType() was added as a default method in Flink 1.15+.
+        DataType physicalRowDataType =
+                context.getCatalogTable().getResolvedSchema().toPhysicalRowDataType();
 
         return new GaussDBCDCTableSource(
                 hostname,
@@ -113,6 +121,8 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
                 parallelDecodeNum,
                 decodeStyle,
                 sendingBatch,
+                sslMode,
+                replicationPort,
                 physicalRowDataType);
     }
 }

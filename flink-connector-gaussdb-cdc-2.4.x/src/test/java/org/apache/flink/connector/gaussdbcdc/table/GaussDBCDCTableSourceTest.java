@@ -55,6 +55,8 @@ class GaussDBCDCTableSourceTest {
                 4,
                 "b",
                 true,
+                "prefer",
+                null,
                 getTestRowType());
     }
 
@@ -107,6 +109,8 @@ class GaussDBCDCTableSourceTest {
                         1,
                         "b",
                         false,
+                        "prefer",
+                        null,
                         getTestRowType());
 
         assertThat(source.getChangelogMode()).isEqualTo(ChangelogMode.all());

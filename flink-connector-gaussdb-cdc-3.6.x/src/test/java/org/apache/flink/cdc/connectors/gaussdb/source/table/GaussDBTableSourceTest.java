@@ -81,7 +81,8 @@ class GaussDBTableSourceTest {
                 1,
                 "b",
                 false,
-                true);
+                true,
+                null);
     }
 
     @Test
@@ -185,7 +186,8 @@ class GaussDBTableSourceTest {
                         1,
                         "b",
                         false,
-                        true);
+                        true,
+                        null);
 
         ChangelogMode mode = source.getChangelogMode();
         assertThat(mode).isEqualTo(ChangelogMode.upsert());
@@ -237,7 +239,8 @@ class GaussDBTableSourceTest {
                         1,
                         "b",
                         false,
-                        true);
+                        true,
+                        null);
         assertThat(source1).isNotEqualTo(source2);
     }
 }

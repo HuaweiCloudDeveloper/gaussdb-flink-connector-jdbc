@@ -42,6 +42,7 @@ public class GaussDBSourceConfig extends JdbcSourceConfig {
     private final int parallelDecodeNum;
     private final String decodeStyle;
     private final boolean sendingBatch;
+    @Nullable private final Integer replicationPort;
 
     public GaussDBSourceConfig(
             int subtaskId,
@@ -75,7 +76,8 @@ public class GaussDBSourceConfig extends JdbcSourceConfig {
             boolean includeDatabaseInTableId,
             int parallelDecodeNum,
             String decodeStyle,
-            boolean sendingBatch) {
+            boolean sendingBatch,
+            @Nullable Integer replicationPort) {
         super(
                 startupOptions,
                 databaseList,
@@ -109,6 +111,7 @@ public class GaussDBSourceConfig extends JdbcSourceConfig {
         this.parallelDecodeNum = parallelDecodeNum;
         this.decodeStyle = decodeStyle;
         this.sendingBatch = sendingBatch;
+        this.replicationPort = replicationPort;
     }
 
     public int getSubtaskId() {
@@ -133,6 +136,15 @@ public class GaussDBSourceConfig extends JdbcSourceConfig {
 
     public boolean isSendingBatch() {
         return sendingBatch;
+    }
+
+    /**
+     * Returns the dedicated port for replication (streaming) connections, or {@code null} if
+     * replication should use the same port as regular JDBC connections.
+     */
+    @Nullable
+    public Integer getReplicationPort() {
+        return replicationPort;
     }
 
     /** Returns the slot name for backfill task. */

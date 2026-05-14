@@ -118,6 +118,26 @@ public class GaussDBDialect implements JdbcDataSourceDialect {
             PostgresConnection jdbcConnection) {
         try {
             PostgresConnectorConfig pgConnectorConfig = sourceConfig.getDbzConnectorConfig();
+
+            // If a dedicated replication port is configured (e.g. GaussDB HA port when
+            // enable_thread_pool=on), derive a new PostgresConnectorConfig whose
+            // database.port is overridden. The regular JDBC connection (jdbcConnection)
+            // keeps using the main port for discovery/snapshot queries.
+            Integer replicationPort = sourceConfig.getReplicationPort();
+            if (replicationPort != null && replicationPort != sourceConfig.getPort()) {
+                io.debezium.config.Configuration replConfig =
+                        pgConnectorConfig
+                                .getConfig()
+                                .edit()
+                                .with("database.port", String.valueOf(replicationPort))
+                                .build();
+                pgConnectorConfig = new PostgresConnectorConfig(replConfig);
+                LOG.info(
+                        "Using dedicated replication port {} for GaussDB streaming (main JDBC port = {}).",
+                        replicationPort,
+                        sourceConfig.getPort());
+            }
+
             TopicSelector<TableId> topicSelector = PostgresTopicSelector.create(pgConnectorConfig);
             PostgresConnection.PostgresValueConverterBuilder valueConverterBuilder =
                     newPostgresValueConverterBuilder(pgConnectorConfig);
@@ -166,17 +186,39 @@ public class GaussDBDialect implements JdbcDataSourceDialect {
                     PostgresReplicationConnection.class.getDeclaredField("messageDecoder");
             long offset = unsafe.objectFieldOffset(decoderField);
 
+            int parallelDecodeNum = sourceConfig.getParallelDecodeNum();
             String decodeStyle = sourceConfig.getDecodeStyle();
             Object decoder;
-            if ("b".equals(decodeStyle)) {
-                decoder = new MppdbBinaryMessageDecoder();
+            // In serial mode (parallelDecodeNum <= 1), mppdb_decoding always outputs
+            // JSON format regardless of the decode-style parameter. Only in parallel
+            // mode (parallelDecodeNum > 1) does the decode-style parameter take effect.
+            if (parallelDecodeNum > 1 && "b".equals(decodeStyle)) {
+                String schemaName =
+                        sourceConfig.getDbzProperties().getProperty("schema.include.list");
+                String databaseName =
+                        sourceConfig.getDbzProperties().getProperty("database.dbname");
+                decoder = new MppdbBinaryMessageDecoder(schemaName, databaseName);
                 LOG.info(
-                        "Replaced messageDecoder with MppdbBinaryMessageDecoder for mppdb_decoding (decode-style=b)");
+                        "Replaced messageDecoder with MppdbBinaryMessageDecoder for mppdb_decoding "
+                                + "(parallel-decode-num={}, decode-style=b, schemaName={}, catalogName={})",
+                        parallelDecodeNum,
+                        schemaName,
+                        databaseName);
             } else {
-                decoder = new MppdbDecodingMessageDecoder();
+                // Pass the expected schema name so that the decoder can correct
+                // the schema in mppdb_decoding serial mode output (e.g., root.table ->
+                // public.table)
+                String schemaName =
+                        sourceConfig.getDbzProperties().getProperty("schema.include.list");
+                String databaseName =
+                        sourceConfig.getDbzProperties().getProperty("database.dbname");
+                decoder = new MppdbDecodingMessageDecoder(schemaName, databaseName);
                 LOG.info(
-                        "Replaced messageDecoder with MppdbDecodingMessageDecoder for mppdb_decoding (decode-style={})",
-                        decodeStyle);
+                        "Replaced messageDecoder with MppdbDecodingMessageDecoder for mppdb_decoding "
+                                + "(parallel-decode-num={}, decode-style={}, schemaName={})",
+                        parallelDecodeNum,
+                        decodeStyle,
+                        schemaName);
             }
             unsafe.putObject(replConn, offset, decoder);
 

@@ -132,7 +132,8 @@ class GaussDBTableSourceFactoryTest {
                         1,
                         "b",
                         false,
-                        true);
+                        true,
+                        null);
         assertThat(actualSource).isEqualTo(expectedSource);
     }
 
@@ -184,7 +185,8 @@ class GaussDBTableSourceFactoryTest {
                         1,
                         "b",
                         false,
-                        true);
+                        true,
+                        null);
         assertThat(actualSource).isEqualTo(expectedSource);
     }
 
@@ -232,7 +234,8 @@ class GaussDBTableSourceFactoryTest {
                         1,
                         "b",
                         false,
-                        true);
+                        true,
+                        null);
         assertThat(actualSource).isEqualTo(expectedSource);
     }
 
@@ -278,7 +281,8 @@ class GaussDBTableSourceFactoryTest {
                         1,
                         "b",
                         false,
-                        true);
+                        true,
+                        null);
         assertThat(actualSource).isEqualTo(expectedSource);
     }
 
@@ -327,7 +331,8 @@ class GaussDBTableSourceFactoryTest {
                         4,
                         "j",
                         true,
-                        false);
+                        false,
+                        null);
         assertThat(actualSource).isEqualTo(expectedSource);
     }
 

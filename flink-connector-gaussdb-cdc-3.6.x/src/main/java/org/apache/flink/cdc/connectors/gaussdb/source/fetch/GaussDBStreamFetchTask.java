@@ -199,6 +199,27 @@ public class GaussDBStreamFetchTask implements FetchTask<SourceSplitBase> {
             this.errorHandler = errorHandler;
         }
 
+        /**
+         * Overrides the default {@code init()} to skip the {@code refreshSchema()} call.
+         *
+         * <p>The base Debezium {@link PostgresStreamingChangeEventSource#init()} calls {@code
+         * taskContext.refreshSchema()}, which clears the existing table schemas and re-reads them
+         * from the database via {@code DatabaseMetaData.getTables()}. For GaussDB, this can fail to
+         * return the captured table's metadata (e.g., due to JDBC driver differences in metadata
+         * queries), causing "No metadata registered for captured table" errors during event
+         * dispatch.
+         *
+         * <p>In the Flink CDC framework, the schema is already properly initialized in {@code
+         * GaussDBSourceFetchTaskContext.configure()} via {@code PostgresObjectUtils.newSchema()}
+         * with the table schemas from the split, so the refresh is not necessary.
+         */
+        @Override
+        public void init() {
+            LOG.info(
+                    "Skipping refreshSchema() in GaussDB StreamSplitReadTask.init() - "
+                            + "schema is already initialized from split metadata");
+        }
+
         @Override
         public void execute(
                 ChangeEventSourceContext context,

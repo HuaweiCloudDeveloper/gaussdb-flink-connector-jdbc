@@ -25,6 +25,7 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.connector.gaussdbcdc.GaussDBCDCOptions;
 import org.apache.flink.connector.gaussdbcdc.source.wal.WalChange;
 import org.apache.flink.connector.gaussdbcdc.source.wal.WalReplicationStream;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
@@ -36,6 +37,7 @@ import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
+import org.apache.flink.types.RowKind;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -85,6 +87,23 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private static final long serialVersionUID = 1L;
     private static final Logger LOG = LoggerFactory.getLogger(GaussDBCDCSourceFunction.class);
 
+    /**
+     * TIMESTAMP formatter accepting 0~9 digits of fractional seconds.
+     *
+     * <p>GaussDB strips trailing zeros from TIMESTAMP fractional parts (e.g. {@code
+     * 2026-05-11 14:52:53.4848} has only 4 digits, {@code .48497} has 5 digits). A strict
+     * {@code SSSSSS} pattern (exactly 6 digits) would reject them, causing silent row drops in
+     * the WAL path. Use an optional variable-width fraction to accept any precision.
+     */
+    private static final java.time.format.DateTimeFormatter TIMESTAMP_FORMATTER =
+            new java.time.format.DateTimeFormatterBuilder()
+                    .appendPattern("yyyy-MM-dd HH:mm:ss")
+                    .optionalStart()
+                    .appendFraction(
+                            java.time.temporal.ChronoField.NANO_OF_SECOND, 0, 9, true)
+                    .optionalEnd()
+                    .toFormatter();
+
     // Configuration
     private final String hostname;
     private final int port;
@@ -104,6 +123,12 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private final int parallelDecodeNum;
     private final String decodeStyle;
     private final boolean sendingBatch;
+    private final String sslMode;
+    /**
+     * Optional dedicated port for WAL replication streaming. Null means reuse {@link #port} for
+     * replication. See {@link GaussDBCDCOptions#REPLICATION_PORT}.
+     */
+    private final Integer replicationPort;
 
     // Runtime state
     private transient volatile boolean running = true;
@@ -111,6 +136,9 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private transient WalReplicationStream walReplicationStream;
     private transient ChangeDataPoller changeDataPoller;
     private transient boolean walStreamInitialized = false;
+
+    // Cached column metadata for WAL change conversion
+    private transient List<String> cachedColumnNames;
 
     // Checkpoint state
     private transient ListState<String> offsetState;
@@ -134,16 +162,19 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         this.parallelDecodeNum = builder.parallelDecodeNum;
         this.decodeStyle = builder.decodeStyle;
         this.sendingBatch = builder.sendingBatch;
+        this.sslMode = builder.sslMode;
+        this.replicationPort = builder.replicationPort;
     }
 
     @Override
     public void open(Configuration parameters) throws Exception {
         super.open(parameters);
+        this.running = true; // transient field reset on deserialization, must re-initialize
         Class.forName("com.huawei.gaussdb.jdbc.Driver");
 
         String url =
                 String.format(
-                        "jdbc:gaussdb://%s:%d/%s?compatibleMode=mysql", hostname, port, database);
+                        "jdbc:gaussdb://%s:%d/%s?sslmode=%s", hostname, port, database, sslMode);
         this.connection = DriverManager.getConnection(url, username, password);
 
         if (walMode) {
@@ -158,7 +189,14 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                             parallelDecodeNum,
                             decodeStyle,
                             sendingBatch,
-                            1000);
+                            1000,
+                            replicationPort);
+            if (replicationPort != null) {
+                LOG.info(
+                        "Using dedicated replication port {} for GaussDB WAL streaming (main JDBC port = {})",
+                        replicationPort,
+                        port);
+            }
             LOG.info(
                     "Using WAL mode with plugin={}, parallel-decode-num={}, decode-style={}",
                     decodePlugin,
@@ -167,6 +205,27 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         } else {
             this.changeDataPoller = new ChangeDataPoller(connection, schema, tableName, "id");
             LOG.info("Using polling-based CDC mode");
+        }
+
+        // Cache column names for WAL change conversion (needed because DELETE/UPDATE
+        // may only send a subset of columns, but Flink expects full-row arity)
+        try {
+            java.sql.DatabaseMetaData meta = connection.getMetaData();
+            java.util.List<String> colNames = new java.util.ArrayList<>();
+            try (java.sql.ResultSet rs = meta.getColumns(null, schema, tableName, null)) {
+                while (rs.next()) {
+                    colNames.add(rs.getString("COLUMN_NAME"));
+                }
+            }
+            this.cachedColumnNames = colNames;
+            LOG.info(
+                    "Cached {} columns for table {}.{}: {}",
+                    colNames.size(),
+                    schema,
+                    tableName,
+                    colNames);
+        } catch (Exception e) {
+            LOG.warn("Failed to cache column names for {}.{}", schema, tableName, e);
         }
 
         LOG.info(
@@ -307,35 +366,87 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                     walReplicationStream.getLastLsn());
         }
 
+        LOG.info("Entering WAL streaming loop, running={}", running);
         while (running) {
-            List<WalChange> changes = walReplicationStream.readChanges(1000);
-
-            for (WalChange change : changes) {
-                if (!change.isDataChange()) {
-                    continue;
+            try {
+                List<WalChange> changes = walReplicationStream.readChanges(1000);
+                String streamLsn = walReplicationStream.getLastLsn();
+                if (!changes.isEmpty()) {
+                    LOG.info(
+                            "Read {} changes from WAL stream, running={}, lastLsn={}",
+                            changes.size(),
+                            running,
+                            streamLsn);
                 }
 
-                WalChange.ChangeType changeType = change.getType();
-                RowData row = null;
-                if (changeType == WalChange.ChangeType.INSERT) {
-                    row = convertWalColumnsToRowData(change.getAfterColumns());
-                } else if (changeType == WalChange.ChangeType.UPDATE) {
-                    row = convertWalColumnsToRowData(change.getAfterColumns());
-                } else if (changeType == WalChange.ChangeType.DELETE) {
-                    LOG.debug("Detected DELETE on {}.{}", change.getSchema(), change.getTable());
-                }
+                for (WalChange change : changes) {
+                    if (!change.isDataChange()) {
+                        continue;
+                    }
 
-                if (row != null) {
-                    synchronized (ctx.getCheckpointLock()) {
-                        ctx.collect(row);
+                    // Filter out changes from non-target tables.
+                    // WAL logical decoding captures ALL changes in the database,
+                    // but we only want changes for the configured table.
+                    String changeSchema = change.getSchema();
+                    String changeTable = change.getTable();
+                    if (changeSchema == null
+                            || changeTable == null
+                            || !changeSchema.equalsIgnoreCase(schema)
+                            || !changeTable.equalsIgnoreCase(tableName)) {
+                        LOG.debug(
+                                "Skipping change from non-target table: {}.{}",
+                                changeSchema,
+                                changeTable);
+                        continue;
+                    }
+
+                    WalChange.ChangeType changeType = change.getType();
+                    RowData row = null;
+                    try {
+                        if (changeType == WalChange.ChangeType.INSERT) {
+                            row = convertWalColumnsToRowData(change.getAfterColumns());
+                        } else if (changeType == WalChange.ChangeType.UPDATE) {
+                            row = convertWalColumnsToRowData(change.getAfterColumns());
+                        } else if (changeType == WalChange.ChangeType.DELETE) {
+                            row = convertWalColumnsToRowData(change.getBeforeColumns());
+                            if (row != null) {
+                                row.setRowKind(RowKind.DELETE);
+                            }
+                            LOG.debug(
+                                    "Detected DELETE on {}.{}",
+                                    change.getSchema(),
+                                    change.getTable());
+                        }
+                    } catch (Exception e) {
+                        LOG.warn(
+                                "Failed to convert WAL change on {}.{}: {}",
+                                changeSchema,
+                                changeTable,
+                                e.getMessage());
+                        continue;
+                    }
+
+                    if (row != null) {
+                        synchronized (ctx.getCheckpointLock()) {
+                            ctx.collect(row);
+                        }
                     }
                 }
-            }
 
-            if (changes.isEmpty()) {
-                Thread.sleep(pollIntervalMs);
+                if (changes.isEmpty()) {
+                    Thread.sleep(pollIntervalMs);
+                }
+            } catch (InterruptedException e) {
+                LOG.info("WAL streaming loop interrupted, running={}", running);
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Exception e) {
+                LOG.error(
+                        "Error in WAL streaming loop, running={}: {}", running, e.getMessage(), e);
+                throw e;
             }
         }
+        LOG.info("Exited WAL streaming loop, running={}", running);
     }
 
     /** Phase 2b: Polling-based streaming using ChangeDataPoller. */
@@ -355,6 +466,10 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                         row = event.getAfter();
                         break;
                     case DELETE:
+                        row = event.getBefore();
+                        if (row != null) {
+                            ((GenericRowData) row).setRowKind(RowKind.DELETE);
+                        }
                         LOG.debug("Detected DELETE event");
                         break;
                     case SNAPSHOT:
@@ -445,15 +560,39 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         if (columns == null || columns.isEmpty()) {
             return null;
         }
-        GenericRowData row = new GenericRowData(columns.size());
-        for (int i = 0; i < columns.size(); i++) {
-            WalChange.ColumnValue col = columns.get(i);
-            if (col.isNull()) {
-                row.setField(i, null);
-                continue;
+        // Use cached column count to ensure RowData arity matches the full table schema.
+        // WAL events (especially DELETE) may only contain a subset of columns,
+        // but Flink's serializer expects the full row arity.
+        int colCount = (cachedColumnNames != null) ? cachedColumnNames.size() : columns.size();
+        GenericRowData row = new GenericRowData(colCount);
+
+        if (cachedColumnNames != null && !cachedColumnNames.isEmpty()) {
+            // Map WAL columns by name to the correct positions
+            java.util.Map<String, WalChange.ColumnValue> colMap = new java.util.HashMap<>();
+            for (WalChange.ColumnValue col : columns) {
+                colMap.put(col.getColumnName(), col);
             }
-            Object value = convertColumnValueByOid(col.getTypeOid(), col.getValue());
-            row.setField(i, value);
+            for (int i = 0; i < cachedColumnNames.size(); i++) {
+                String colName = cachedColumnNames.get(i);
+                WalChange.ColumnValue col = colMap.get(colName);
+                if (col == null || col.isNull()) {
+                    row.setField(i, null);
+                } else {
+                    Object value = convertColumnValueByOid(col.getTypeOid(), col.getValue());
+                    row.setField(i, value);
+                }
+            }
+        } else {
+            // Fallback: assume WAL columns are in table order
+            for (int i = 0; i < columns.size(); i++) {
+                WalChange.ColumnValue col = columns.get(i);
+                if (col.isNull()) {
+                    row.setField(i, null);
+                    continue;
+                }
+                Object value = convertColumnValueByOid(col.getTypeOid(), col.getValue());
+                row.setField(i, value);
+            }
         }
         return row;
     }
@@ -484,10 +623,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                         numericBd, numericBd.precision(), numericBd.scale());
             case 1114: // timestamp
                 return TimestampData.fromLocalDateTime(
-                        java.time.LocalDateTime.parse(
-                                value,
-                                java.time.format.DateTimeFormatter.ofPattern(
-                                        "yyyy-MM-dd HH:mm:ss[.SSSSSS]")));
+                        java.time.LocalDateTime.parse(value, TIMESTAMP_FORMATTER));
             case 1082: // date
                 return (int) java.time.LocalDate.parse(value).toEpochDay();
             default:
@@ -599,6 +735,8 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         private int parallelDecodeNum = 1;
         private String decodeStyle = "b";
         private boolean sendingBatch = false;
+        private String sslMode = GaussDBCDCOptions.SSL_MODE.defaultValue();
+        private Integer replicationPort;
 
         public Builder hostname(String hostname) {
             this.hostname = hostname;
@@ -687,6 +825,16 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
         public Builder sendingBatch(boolean sendingBatch) {
             this.sendingBatch = sendingBatch;
+            return this;
+        }
+
+        public Builder sslMode(String sslMode) {
+            this.sslMode = sslMode;
+            return this;
+        }
+
+        public Builder replicationPort(Integer replicationPort) {
+            this.replicationPort = replicationPort;
             return this;
         }
 

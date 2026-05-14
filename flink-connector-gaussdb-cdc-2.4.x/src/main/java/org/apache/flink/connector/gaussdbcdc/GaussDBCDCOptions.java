@@ -38,6 +38,19 @@ public class GaussDBCDCOptions {
                     .defaultValue(8000)
                     .withDescription("Integer port number of the GaussDB database server.");
 
+    public static final ConfigOption<Integer> REPLICATION_PORT =
+            ConfigOptions.key("replication.port")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Optional dedicated port for WAL logical replication streaming."
+                                    + " Only effective when wal.mode=true. When GaussDB runs with"
+                                    + " enable_thread_pool=on, the main data port (e.g. 8000) only"
+                                    + " serves regular JDBC and rejects replication=database; the HA"
+                                    + " port (e.g. 8001) must be used for WAL streaming. Set this"
+                                    + " option to the HA port in that scenario. If unset, the main"
+                                    + " 'port' is reused for replication.");
+
     public static final ConfigOption<String> DATABASE =
             ConfigOptions.key("database")
                     .stringType()
@@ -150,6 +163,15 @@ public class GaussDBCDCOptions {
                             "Whether to use WAL logical decoding for change capture. "
                                     + "When false (default), uses polling-based CDC. "
                                     + "When true, uses WAL logical replication stream.");
+
+    public static final ConfigOption<String> SSL_MODE =
+            ConfigOptions.key("sslmode")
+                    .stringType()
+                    .defaultValue("prefer")
+                    .withDescription(
+                            "SSL mode for GaussDB connections. "
+                                    + "Supported values: disable, allow, prefer, require, verify-ca, verify-full. "
+                                    + "Default is 'prefer'.");
 
     private GaussDBCDCOptions() {}
 }

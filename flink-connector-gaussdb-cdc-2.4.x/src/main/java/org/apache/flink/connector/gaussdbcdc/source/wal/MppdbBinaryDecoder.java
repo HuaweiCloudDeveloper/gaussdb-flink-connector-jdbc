@@ -118,10 +118,45 @@ public class MppdbBinaryDecoder {
                 break;
             }
 
+            // Mark the position before reading the record header,
+            // so we can skip to the next record using totalSize regardless of
+            // how many bytes the decoder actually consumed.
+            int recordStartPos = buffer.position();
+
             int totalSize = buffer.getInt() & 0xFFFFFFFF;
             if (totalSize == 0) {
                 // End of batch marker
                 break;
+            }
+
+            // Determine the next record position.
+            // In mppdb_decoding binary format, each record is followed by a 1-byte separator
+            // ('P' = more records pending, 'F' = end of batch). The totalSize field does NOT
+            // include this separator byte. So the actual record layout is:
+            //   totalSize(4) + LSN(8) + type(1) + body(...) + separator(1)
+            // And nextRecordPos = recordStartPos + 4 + totalSize + 1 (for separator)
+            //
+            // However, we validate this by checking if the byte at nextPosA is a separator,
+            // and if so, the next record starts at nextPosA + 1.
+            int bodyEndPos = recordStartPos + 4 + totalSize;
+
+            // Check if there's a separator byte at bodyEndPos
+            int nextRecordPos;
+            if (bodyEndPos < data.length) {
+                byte sepByte = data[bodyEndPos];
+                if (sepByte == SEPARATOR_MORE || sepByte == SEPARATOR_END) {
+                    // Separator found: next record starts after separator
+                    nextRecordPos = bodyEndPos + 1;
+                    if (sepByte == SEPARATOR_END) {
+                        // End of batch - process this record but stop after
+                        nextRecordPos = -1; // signal: end of batch after this record
+                    }
+                } else {
+                    // No separator: next record starts right after the body
+                    nextRecordPos = bodyEndPos;
+                }
+            } else {
+                nextRecordPos = bodyEndPos;
             }
 
             // Read LSN (8 bytes uint64)
@@ -134,6 +169,15 @@ public class MppdbBinaryDecoder {
             // Read record type (1 byte)
             byte typeByte = buffer.get();
 
+            LOG.debug(
+                    "Record at pos={}: totalSize={}, type={}, lsn={}, bodyEndPos={}, chosenNext={}",
+                    recordStartPos,
+                    totalSize,
+                    (char) typeByte,
+                    lsnStr,
+                    bodyEndPos,
+                    nextRecordPos);
+
             try {
                 WalChange change = decodeRecord(buffer, lsnStr, typeByte);
                 if (change != null) {
@@ -141,13 +185,19 @@ public class MppdbBinaryDecoder {
                 }
             } catch (Exception e) {
                 LOG.warn("Failed to decode WAL record at LSN {}: {}", lsnStr, e.getMessage());
-                // Skip remaining bytes of this record based on totalSize
-                // We've already read 9 bytes (8 LSN + 1 type) after the totalSize
-                int bytesRead = 9;
-                int toSkip = totalSize - bytesRead;
-                if (toSkip > 0 && buffer.remaining() >= toSkip) {
-                    buffer.position(buffer.position() + toSkip);
-                }
+            }
+
+            // CRITICAL: Always position to the next record using totalSize.
+            // The decode* methods may consume more or fewer bytes than the record
+            // actually contains. By using totalSize we guarantee correct alignment.
+            if (nextRecordPos == -1) {
+                // End of batch ('F' separator encountered)
+                break;
+            } else if (nextRecordPos <= buffer.limit()) {
+                buffer.position(nextRecordPos);
+            } else {
+                // Not enough data for the next record, stop
+                break;
             }
         }
 

@@ -61,6 +61,14 @@ public class GaussDBSourceConfigFactory extends JdbcSourceConfigFactory {
 
     private boolean sendingBatch = GaussDBSourceOptions.SENDING_BATCH.defaultValue();
 
+    /**
+     * Optional dedicated port for replication connections. When non-null, replication connections
+     * use this port instead of {@link #port}. Useful for GaussDB with {@code
+     * enable_thread_pool=on}, where replication must go through the HA port while regular JDBC
+     * queries must use the main port.
+     */
+    private Integer replicationPort;
+
     /** Creates a new {@link GaussDBSourceConfig} for the given subtask. */
     @Override
     public GaussDBSourceConfig create(int subtaskId) {
@@ -165,7 +173,8 @@ public class GaussDBSourceConfigFactory extends JdbcSourceConfigFactory {
                 includeDatabaseInTableId,
                 parallelDecodeNum,
                 decodeStyle,
-                sendingBatch);
+                sendingBatch,
+                replicationPort);
     }
 
     public void schemaList(String[] schemaList) {
@@ -206,5 +215,9 @@ public class GaussDBSourceConfigFactory extends JdbcSourceConfigFactory {
 
     public void setSendingBatch(boolean sendingBatch) {
         this.sendingBatch = sendingBatch;
+    }
+
+    public void setReplicationPort(Integer replicationPort) {
+        this.replicationPort = replicationPort;
     }
 }

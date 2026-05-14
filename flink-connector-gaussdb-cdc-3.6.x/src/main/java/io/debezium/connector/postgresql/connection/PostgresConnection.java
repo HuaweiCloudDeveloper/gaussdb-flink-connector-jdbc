@@ -119,6 +119,46 @@ public class PostgresConnection extends JdbcConnection {
     private final PostgresDefaultValueConverter defaultValueConverter;
 
     /**
+     * A JVM-wide override for the main JDBC port used by <b>non-replication</b> PostgresConnection
+     * instances.
+     *
+     * <p>Background: GaussDB with {@code enable_thread_pool=on} separates protocols by port. The
+     * replication protocol must connect to the HA port (e.g. 8001) while regular JDBC queries
+     * (including slot-info / drop-slot / heartbeat) must connect to the main business port (e.g.
+     * 8000). Debezium's {@code PostgresReplicationConnection} internally creates a plain {@code
+     * PostgresConnection} using {@code connectorConfig.getJdbcConfig()} whose port is the HA port,
+     * which GaussDB rejects for non-replication traffic with error: "the local listen ip and port
+     * is not for the gsql client".
+     *
+     * <p>When this override is non-null, {@link #addDefaultSettings(JdbcConfiguration, String)}
+     * will rewrite the port to this value so that every plain PostgresConnection created in this
+     * JVM connects to the main business port. The separate replication stream held by {@code
+     * PostgresReplicationConnection} is unaffected because it applies its own {@code
+     * addDefaultSettings(replication=database)} independently.
+     */
+    private static volatile Integer mainJdbcPortOverride = null;
+
+    /**
+     * Sets the JVM-wide main JDBC port override. Pass {@code null} to disable.
+     *
+     * @see #mainJdbcPortOverride
+     */
+    public static void setMainJdbcPortOverride(Integer port) {
+        if (!Objects.equals(mainJdbcPortOverride, port)) {
+            LOG.info(
+                    "PostgresConnection main JDBC port override: {} -> {}",
+                    mainJdbcPortOverride,
+                    port);
+        }
+        mainJdbcPortOverride = port;
+    }
+
+    /** Returns the current main JDBC port override (may be {@code null}). */
+    public static Integer getMainJdbcPortOverride() {
+        return mainJdbcPortOverride;
+    }
+
+    /**
      * Creates a Postgres connection using the supplied configuration. If necessary this connection
      * is able to resolve data type mappings. Such a connection requires a {@link
      * PostgresValueConverter}, and will provide its own {@link TypeRegistry}. Usually only one such
@@ -227,12 +267,29 @@ public class PostgresConnection extends JdbcConnection {
             JdbcConfiguration configuration, String connectionUsage) {
         // we require Postgres 9.4 as the minimum server version since that's where logical
         // replication was first introduced
-        return JdbcConfiguration.adapt(
+        io.debezium.config.Configuration.Builder builder =
                 configuration
                         .edit()
                         .with("assumeMinServerVersion", "9.4")
-                        .with("ApplicationName", connectionUsage)
-                        .build());
+                        .with("ApplicationName", connectionUsage);
+
+        // GaussDB thread-pool mode: force plain JDBC connections to the main business port,
+        // even when the config was derived with the HA (replication) port. See
+        // mainJdbcPortOverride for details. The real replication stream uses the
+        // CONNECTION_STREAMING usage and must keep the HA port, so we skip the override for it.
+        Integer mainPort = mainJdbcPortOverride;
+        if (mainPort != null && !CONNECTION_STREAMING.equals(connectionUsage)) {
+            int currentPort = configuration.getInteger(JdbcConfiguration.PORT, -1);
+            if (currentPort != mainPort.intValue()) {
+                LOG.info(
+                        "Overriding plain JDBC PostgresConnection port {} -> {} (usage={})",
+                        currentPort,
+                        mainPort,
+                        connectionUsage);
+                builder.with(JdbcConfiguration.PORT, mainPort);
+            }
+        }
+        return JdbcConfiguration.adapt(builder.build());
     }
 
     /**

@@ -108,6 +108,47 @@ public class MppdbBinaryMessageDecoder extends AbstractMessageDecoder {
 
     private boolean containsMetadata = false;
 
+    /**
+     * The expected schema name for table identification. In some mppdb_decoding output formats, the
+     * schema part might not match the actual schema (e.g., using the database username instead of
+     * the schema name). This field is used to correct the schema name in the decoded
+     * ReplicationMessage so that Debezium's table filter and schema lookup can match correctly.
+     */
+    private final String expectedSchemaName;
+
+    /** The database (catalog) name to include in the fully-qualified table identifier. */
+    private final String catalogName;
+
+    /** Creates a decoder without schema name correction. */
+    public MppdbBinaryMessageDecoder() {
+        this.expectedSchemaName = null;
+        this.catalogName = null;
+    }
+
+    /**
+     * Creates a decoder with schema name correction.
+     *
+     * @param expectedSchemaName the actual schema name to use when correcting schema (e.g.,
+     *     "public")
+     */
+    public MppdbBinaryMessageDecoder(String expectedSchemaName) {
+        this.expectedSchemaName = expectedSchemaName;
+        this.catalogName = null;
+    }
+
+    /**
+     * Creates a decoder with schema name correction and catalog name.
+     *
+     * @param expectedSchemaName the actual schema name to use when correcting schema (e.g.,
+     *     "public")
+     * @param catalogName the database name to include in the fully-qualified table identifier
+     *     (e.g., "postgres")
+     */
+    public MppdbBinaryMessageDecoder(String expectedSchemaName, String catalogName) {
+        this.expectedSchemaName = expectedSchemaName;
+        this.catalogName = catalogName;
+    }
+
     @Override
     public void setContainsMetadata(boolean containsMetadata) {
         this.containsMetadata = containsMetadata;
@@ -125,6 +166,12 @@ public class MppdbBinaryMessageDecoder extends AbstractMessageDecoder {
 
         List<ReplicationMessage> messages = decodeBatch(data);
         for (ReplicationMessage msg : messages) {
+            if (!msg.isTransactionalMessage()) {
+                LOG.debug(
+                        "MppdbBinaryMessageDecoder decoded DML: op={}, table={}",
+                        msg.getOperation(),
+                        msg.getTable());
+            }
             processor.process(msg);
         }
     }
@@ -157,6 +204,22 @@ public class MppdbBinaryMessageDecoder extends AbstractMessageDecoder {
     // ---- Binary protocol decoding ----
 
     /**
+     * Corrects the schema name if needed. In some mppdb_decoding outputs, the schema part might not
+     * match the actual schema name (e.g., using the database username). If expectedSchemaName is
+     * set and the decoded schema differs, the schema is corrected.
+     */
+    private String correctSchemaName(String schema) {
+        if (expectedSchemaName != null && !schema.equals(expectedSchemaName)) {
+            LOG.debug(
+                    "Correcting schema name from '{}' to '{}' in binary decoder",
+                    schema,
+                    expectedSchemaName);
+            return expectedSchemaName;
+        }
+        return schema;
+    }
+
+    /**
      * Decodes a batch of binary data from mppdb_decoding into {@link ReplicationMessage} events.
      *
      * @param data the raw binary data from the replication stream
@@ -173,6 +236,7 @@ public class MppdbBinaryMessageDecoder extends AbstractMessageDecoder {
             if (buf.remaining() < 4) {
                 break;
             }
+            int recordStartPos = buf.position();
             int totalSize = buf.getInt() & 0xFFFFFFFF;
             if (totalSize == 0) {
                 break;
@@ -184,6 +248,28 @@ public class MppdbBinaryMessageDecoder extends AbstractMessageDecoder {
             String lsnStr = "0x" + Long.toHexString(lsn);
             byte typeByte = buf.get();
 
+            // Compute the authoritative end-of-record position.
+            //
+            // <p>Each record in mppdb_decoding binary output is laid out as:
+            //   totalSize(4) + LSN(8) + type(1) + body(...) + separator(1)
+            //
+            // <p>The {@code totalSize} field does NOT include the trailing
+            // separator byte ('P' = more records, 'F' = end of batch).
+            // Therefore {@code bodyEndPos = recordStartPos + 4 + totalSize}
+            // points at the separator byte (or end-of-data).
+            //
+            // <p>Some per-type decoders (e.g. decodeBegin) do not consume the
+            // trailing separator; relying on each decoder to land exactly on
+            // the next record boundary causes cumulative misalignment and
+            // spurious "Unknown WAL record type" warnings (observed: 100%
+            // TIMESTAMP loss, decoder thrashing on 50k-row bursts).
+            //
+            // <p>To keep framing robust, we always realign {@code buf} to
+            // {@code bodyEndPos} after each record, then consume the
+            // separator byte uniformly here.
+            int bodyEndPos = recordStartPos + 4 + totalSize;
+            boolean endOfBatch = false;
+
             try {
                 ReplicationMessage msg = decodeRecord(buf, lsnStr, typeByte);
                 if (msg != null) {
@@ -191,11 +277,29 @@ public class MppdbBinaryMessageDecoder extends AbstractMessageDecoder {
                 }
             } catch (Exception e) {
                 LOG.warn("Failed to decode WAL record at LSN {}: {}", lsnStr, e.getMessage());
-                int bytesRead = 9;
-                int toSkip = totalSize - bytesRead;
-                if (toSkip > 0 && buf.remaining() >= toSkip) {
-                    buf.position(buf.position() + toSkip);
+            }
+
+            // Realign buffer position to exactly bodyEndPos, regardless of
+            // how many bytes the per-type decoder actually consumed.
+            if (bodyEndPos > data.length) {
+                // Truncated record; bail out to avoid reading past end.
+                break;
+            }
+            buf.position(bodyEndPos);
+
+            // Uniformly consume the separator byte if present.
+            if (buf.hasRemaining()) {
+                byte sep = data[bodyEndPos];
+                if (sep == SEPARATOR_MORE) {
+                    buf.position(bodyEndPos + 1);
+                } else if (sep == SEPARATOR_END) {
+                    buf.position(bodyEndPos + 1);
+                    endOfBatch = true;
                 }
+                // else: no separator here (batch boundary); leave buf as-is.
+            }
+            if (endOfBatch) {
+                break;
             }
         }
         return messages;
@@ -272,7 +376,7 @@ public class MppdbBinaryMessageDecoder extends AbstractMessageDecoder {
     }
 
     private ReplicationMessage decodeInsert(ByteBuffer buf, String lsnStr) {
-        String schema = readUint16LengthString(buf);
+        String schema = correctSchemaName(readUint16LengthString(buf));
         String table = readUint16LengthString(buf);
 
         List<Column> columns = new ArrayList<>();
@@ -288,11 +392,17 @@ public class MppdbBinaryMessageDecoder extends AbstractMessageDecoder {
 
         readSeparator(buf);
         return new MppdbReplicationMessage(
-                ReplicationMessage.Operation.INSERT, schema, table, columns, null, "INSERT");
+                ReplicationMessage.Operation.INSERT,
+                catalogName,
+                schema,
+                table,
+                columns,
+                null,
+                "INSERT");
     }
 
     private ReplicationMessage decodeUpdate(ByteBuffer buf, String lsnStr) {
-        String schema = readUint16LengthString(buf);
+        String schema = correctSchemaName(readUint16LengthString(buf));
         String table = readUint16LengthString(buf);
 
         List<Column> beforeColumns = new ArrayList<>();
@@ -329,6 +439,7 @@ public class MppdbBinaryMessageDecoder extends AbstractMessageDecoder {
         readSeparator(buf);
         return new MppdbReplicationMessage(
                 ReplicationMessage.Operation.UPDATE,
+                catalogName,
                 schema,
                 table,
                 afterColumns,
@@ -337,7 +448,7 @@ public class MppdbBinaryMessageDecoder extends AbstractMessageDecoder {
     }
 
     private ReplicationMessage decodeDelete(ByteBuffer buf, String lsnStr) {
-        String schema = readUint16LengthString(buf);
+        String schema = correctSchemaName(readUint16LengthString(buf));
         String table = readUint16LengthString(buf);
 
         List<Column> columns = new ArrayList<>();
@@ -353,7 +464,13 @@ public class MppdbBinaryMessageDecoder extends AbstractMessageDecoder {
 
         readSeparator(buf);
         return new MppdbReplicationMessage(
-                ReplicationMessage.Operation.DELETE, schema, table, null, columns, "DELETE");
+                ReplicationMessage.Operation.DELETE,
+                catalogName,
+                schema,
+                table,
+                null,
+                columns,
+                "DELETE");
     }
 
     /**

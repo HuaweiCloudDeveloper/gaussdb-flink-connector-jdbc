@@ -65,6 +65,49 @@ public class MppdbDecodingMessageDecoder extends AbstractMessageDecoder {
 
     private boolean containsMetadata = false;
 
+    /**
+     * The expected schema name for table identification. In mppdb_decoding serial mode, the
+     * table_name field uses the database username (e.g., "root") instead of the actual schema name
+     * (e.g., "public"). This field is used to correct the schema name in the parsed
+     * ReplicationMessage so that Debezium's table filter can match the record correctly.
+     */
+    private final String expectedSchemaName;
+
+    /** The database (catalog) name to include in the fully-qualified table identifier. */
+    private final String catalogName;
+
+    /** Creates a decoder without schema name correction. */
+    public MppdbDecodingMessageDecoder() {
+        this.expectedSchemaName = null;
+        this.catalogName = null;
+    }
+
+    /**
+     * Creates a decoder with schema name correction. When the JSON table_name field contains a
+     * schema that doesn't look like a real schema name (i.e., matches the database username), it
+     * will be replaced with the expectedSchemaName.
+     *
+     * @param expectedSchemaName the actual schema name to use when correcting table_name (e.g.,
+     *     "public")
+     */
+    public MppdbDecodingMessageDecoder(String expectedSchemaName) {
+        this.expectedSchemaName = expectedSchemaName;
+        this.catalogName = null;
+    }
+
+    /**
+     * Creates a decoder with schema name correction and catalog name.
+     *
+     * @param expectedSchemaName the actual schema name to use when correcting table_name (e.g.,
+     *     "public")
+     * @param catalogName the database name to include in the fully-qualified table identifier
+     *     (e.g., "postgres")
+     */
+    public MppdbDecodingMessageDecoder(String expectedSchemaName, String catalogName) {
+        this.expectedSchemaName = expectedSchemaName;
+        this.catalogName = catalogName;
+    }
+
     @Override
     public void setContainsMetadata(boolean containsMetadata) {
         this.containsMetadata = containsMetadata;
@@ -174,6 +217,18 @@ public class MppdbDecodingMessageDecoder extends AbstractMessageDecoder {
             if (dotIdx > 0) {
                 schema = tableName.substring(0, dotIdx);
                 table = tableName.substring(dotIdx + 1);
+                // In mppdb_decoding serial mode, the schema part of table_name is
+                // the database username (e.g., "root") instead of the actual schema
+                // name (e.g., "public"). Replace it with the expected schema name
+                // so that Debezium's table filter can match the record correctly.
+                if (expectedSchemaName != null && !schema.equals(expectedSchemaName)) {
+                    LOG.debug(
+                            "Correcting schema name from '{}' to '{}' for table '{}'",
+                            schema,
+                            expectedSchemaName,
+                            table);
+                    schema = expectedSchemaName;
+                }
             } else {
                 table = tableName;
             }
@@ -206,7 +261,8 @@ public class MppdbDecodingMessageDecoder extends AbstractMessageDecoder {
         List<Column> oldColumns =
                 parseJsonColumns(json, "old_keys_name", "old_keys_type", "old_keys_val");
 
-        return new MppdbReplicationMessage(operation, schema, table, newColumns, oldColumns, json);
+        return new MppdbReplicationMessage(
+                operation, catalogName, schema, table, newColumns, oldColumns, json);
     }
 
     private String extractJsonStringField(String json, String fieldName) {
