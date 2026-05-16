@@ -30,6 +30,7 @@ import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
+import org.apache.flink.types.RowKind;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -166,7 +167,16 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
                         decodeStyle);
             } else {
                 // Polling-based CDC mode
-                this.changeDataPoller = new ChangeDataPoller(connection, schema, tableName, "id");
+                this.changeDataPoller =
+                        new ChangeDataPoller(
+                                connection,
+                                schema,
+                                tableName,
+                                "id",
+                                String.format("jdbc:gaussdb://%s:%d/%s", hostname, port, database),
+                                username,
+                                password,
+                                sslMode);
                 LOG.info("Using polling-based CDC mode");
             }
 
@@ -198,6 +208,11 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
                 output.collect(row);
                 count++;
             }
+        }
+
+        // Load snapshot into ChangeDataPoller so incremental polling works
+        if (changeDataPoller != null) {
+            changeDataPoller.loadSnapshot();
         }
 
         LOG.info("Read {} rows from {}.{}", count, schema, tableName);
@@ -421,9 +436,13 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
                     updateCount++;
                     break;
                 case DELETE:
-                    // For DELETE, we could emit a tombstone or skip
-                    // Current implementation: skip (or emit before image if needed)
-                    LOG.debug("Detected DELETE for id: {}", event.getBefore().getInt(0));
+                    // For DELETE, emit the before image with DELETE RowKind
+                    RowData beforeRow = event.getBefore();
+                    if (beforeRow instanceof GenericRowData) {
+                        ((GenericRowData) beforeRow).setRowKind(RowKind.DELETE);
+                    }
+                    LOG.info("Emitting DELETE event: before={}", beforeRow);
+                    output.collect(beforeRow);
                     deleteCount++;
                     break;
                 case SNAPSHOT:
