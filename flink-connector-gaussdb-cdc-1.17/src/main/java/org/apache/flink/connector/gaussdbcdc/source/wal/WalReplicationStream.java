@@ -70,6 +70,8 @@ public class WalReplicationStream {
     private final boolean sendingBatch;
     private final int fetchSize;
 
+    private final Integer replicationPort;
+
     private String lastLsn;
     private boolean running = false;
     private boolean useReplicationApi = false;
@@ -93,6 +95,32 @@ public class WalReplicationStream {
             String decodeStyle,
             boolean sendingBatch,
             int fetchSize) {
+        this(
+                connection,
+                jdbcUrl,
+                username,
+                password,
+                slotName,
+                pluginName,
+                parallelDecodeNum,
+                decodeStyle,
+                sendingBatch,
+                fetchSize,
+                null);
+    }
+
+    public WalReplicationStream(
+            Connection connection,
+            String jdbcUrl,
+            String username,
+            String password,
+            String slotName,
+            String pluginName,
+            int parallelDecodeNum,
+            String decodeStyle,
+            boolean sendingBatch,
+            int fetchSize,
+            Integer replicationPort) {
         this.connection = connection;
         this.jdbcUrl = jdbcUrl;
         this.username = username;
@@ -103,6 +131,7 @@ public class WalReplicationStream {
         this.decodeStyle = decodeStyle;
         this.sendingBatch = sendingBatch;
         this.fetchSize = fetchSize;
+        this.replicationPort = replicationPort;
         this.binaryDecoder = new MppdbBinaryDecoder();
     }
 
@@ -227,6 +256,26 @@ public class WalReplicationStream {
      */
     private String buildReplicationUrl(String originalUrl) {
         String url = originalUrl;
+
+        // If a dedicated replication port is configured (typically the GaussDB HA port
+        // when enable_thread_pool=on), rewrite the host:port segment of the JDBC URL so
+        // that the replication connection targets the HA port instead of the main data port.
+        if (replicationPort != null) {
+            String rewritten =
+                    url.replaceFirst(
+                            "(jdbc:gaussdb://[^:/?]+):\\d+(/)", "$1:" + replicationPort + "$2");
+            if (!rewritten.equals(url)) {
+                LOG.info(
+                        "Using dedicated replication port {} for GaussDB WAL streaming (replication URL rewritten)",
+                        replicationPort);
+                url = rewritten;
+            } else {
+                LOG.warn(
+                        "replicationPort={} configured but could not rewrite host:port in URL [{}]; falling back to main port",
+                        replicationPort,
+                        url);
+            }
+        }
 
         // Remove trailing slash after database name if present
         // and ensure we can append parameters properly

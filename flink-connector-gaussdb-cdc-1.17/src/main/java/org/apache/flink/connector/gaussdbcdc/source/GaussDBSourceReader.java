@@ -78,6 +78,7 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
     private final String decodeStyle;
     private final boolean sendingBatch;
     private final String sslMode;
+    private final Integer replicationPort;
 
     private Connection connection;
     private GaussDBSplit currentSplit;
@@ -111,7 +112,8 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
             int parallelDecodeNum,
             String decodeStyle,
             boolean sendingBatch,
-            String sslMode) {
+            String sslMode,
+            Integer replicationPort) {
         this.context = context;
         this.hostname = hostname;
         this.port = port;
@@ -129,6 +131,7 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
         this.decodeStyle = decodeStyle;
         this.sendingBatch = sendingBatch;
         this.sslMode = sslMode;
+        this.replicationPort = replicationPort;
     }
 
     @Override
@@ -159,7 +162,8 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
                                 parallelDecodeNum,
                                 decodeStyle,
                                 sendingBatch,
-                                1000);
+                                1000,
+                                replicationPort);
                 LOG.info(
                         "Using WAL mode with plugin={}, parallel-decode-num={}, decode-style={}",
                         decodePlugin,
@@ -339,8 +343,15 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
                     output.collect(updateRow);
                 }
             } else if (changeType == WalChange.ChangeType.DELETE) {
-                // For DELETE, log but don't emit (Flink 1.17 streaming limitation)
-                LOG.debug("Detected DELETE on {}.{}", change.getSchema(), change.getTable());
+                // For DELETE, emit the before image with DELETE RowKind
+                RowData deleteRow = convertWalColumnsToRowData(change.getBeforeColumns());
+                if (deleteRow != null) {
+                    if (deleteRow instanceof GenericRowData) {
+                        ((GenericRowData) deleteRow).setRowKind(RowKind.DELETE);
+                    }
+                    LOG.info("Emitting WAL DELETE: {}", deleteRow);
+                    output.collect(deleteRow);
+                }
             }
         }
 

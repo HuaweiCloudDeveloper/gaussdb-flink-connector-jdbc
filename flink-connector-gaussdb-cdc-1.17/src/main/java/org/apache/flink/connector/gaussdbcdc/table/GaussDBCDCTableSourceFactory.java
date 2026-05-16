@@ -69,6 +69,7 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
         options.add(GaussDBCDCOptions.DECODE_STYLE);
         options.add(GaussDBCDCOptions.SENDING_BATCH);
         options.add(GaussDBCDCOptions.SSL_MODE);
+        options.add(GaussDBCDCOptions.REPLICATION_PORT);
         return options;
     }
 
@@ -96,6 +97,7 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
         String decodeStyle = config.get(GaussDBCDCOptions.DECODE_STYLE);
         boolean sendingBatch = config.get(GaussDBCDCOptions.SENDING_BATCH);
         String sslMode = config.get(GaussDBCDCOptions.SSL_MODE);
+        Integer replicationPort = config.get(GaussDBCDCOptions.REPLICATION_PORT);
 
         DataType physicalRowDataType = context.getPhysicalRowDataType();
 
@@ -116,6 +118,7 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
                 decodeStyle,
                 sendingBatch,
                 sslMode,
+                replicationPort,
                 physicalRowDataType);
     }
 }

@@ -81,6 +81,7 @@ public class GaussDBCDCSource
     private final String decodeStyle;
     private final boolean sendingBatch;
     private final String sslMode;
+    private final Integer replicationPort;
 
     private GaussDBCDCSource(Builder builder) {
         this.hostname = Preconditions.checkNotNull(builder.hostname, "hostname must not be null");
@@ -103,6 +104,7 @@ public class GaussDBCDCSource
         this.decodeStyle = builder.decodeStyle;
         this.sendingBatch = builder.sendingBatch;
         this.sslMode = builder.sslMode;
+        this.replicationPort = builder.replicationPort;
     }
 
     @Override
@@ -130,7 +132,8 @@ public class GaussDBCDCSource
                 parallelDecodeNum,
                 decodeStyle,
                 sendingBatch,
-                sslMode);
+                sslMode,
+                replicationPort);
     }
 
     @Override
@@ -211,6 +214,7 @@ public class GaussDBCDCSource
         private String decodeStyle = GaussDBCDCOptions.DECODE_STYLE.defaultValue();
         private boolean sendingBatch = GaussDBCDCOptions.SENDING_BATCH.defaultValue();
         private String sslMode = GaussDBCDCOptions.SSL_MODE.defaultValue();
+        private Integer replicationPort;
 
         public Builder hostname(String hostname) {
             this.hostname = hostname;
@@ -304,6 +308,11 @@ public class GaussDBCDCSource
 
         public Builder sslMode(String sslMode) {
             this.sslMode = sslMode;
+            return this;
+        }
+
+        public Builder replicationPort(Integer replicationPort) {
+            this.replicationPort = replicationPort;
             return this;
         }
 
