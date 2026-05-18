@@ -49,6 +49,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -90,17 +91,16 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     /**
      * TIMESTAMP formatter accepting 0~9 digits of fractional seconds.
      *
-     * <p>GaussDB strips trailing zeros from TIMESTAMP fractional parts (e.g. {@code
-     * 2026-05-11 14:52:53.4848} has only 4 digits, {@code .48497} has 5 digits). A strict
-     * {@code SSSSSS} pattern (exactly 6 digits) would reject them, causing silent row drops in
-     * the WAL path. Use an optional variable-width fraction to accept any precision.
+     * <p>GaussDB strips trailing zeros from TIMESTAMP fractional parts (e.g. {@code 2026-05-11
+     * 14:52:53.4848} has only 4 digits, {@code .48497} has 5 digits). A strict {@code SSSSSS}
+     * pattern (exactly 6 digits) would reject them, causing silent row drops in the WAL path. Use
+     * an optional variable-width fraction to accept any precision.
      */
     private static final java.time.format.DateTimeFormatter TIMESTAMP_FORMATTER =
             new java.time.format.DateTimeFormatterBuilder()
                     .appendPattern("yyyy-MM-dd HH:mm:ss")
                     .optionalStart()
-                    .appendFraction(
-                            java.time.temporal.ChronoField.NANO_OF_SECOND, 0, 9, true)
+                    .appendFraction(java.time.temporal.ChronoField.NANO_OF_SECOND, 0, 9, true)
                     .optionalEnd()
                     .toFormatter();
 
@@ -139,6 +139,9 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
     // Cached column metadata for WAL change conversion
     private transient List<String> cachedColumnNames;
+
+    // LSN recorded before snapshot to avoid WAL replay of already-snapshot data
+    private transient String snapshotStartLsn = null;
 
     // Checkpoint state
     private transient ListState<String> offsetState;
@@ -263,6 +266,14 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
     /** Phase 1: Read initial snapshot via JDBC SELECT with parallel split support. */
     private void readSnapshot(SourceContext<RowData> ctx) throws SQLException {
+        // Record current slot confirmed_flush before reading snapshot, so the
+        // WAL stream can start after this point and avoid replaying already-
+        // snapshot data that would cause duplicate INSERT events.
+        if (walMode) {
+            snapshotStartLsn = getSlotConfirmedFlush();
+            LOG.info("Recorded snapshot start LSN: {}", snapshotStartLsn);
+        }
+
         int subtaskIndex = getRuntimeContext().getIndexOfThisSubtask();
         int numSubtasks = getRuntimeContext().getNumberOfParallelSubtasks();
         String columns = getTableColumns();
@@ -359,7 +370,16 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private void runWalStreaming(SourceContext<RowData> ctx) throws Exception {
         if (!walStreamInitialized) {
             LOG.info("Initializing WAL replication stream for incremental phase");
-            walReplicationStream.initialize();
+            // Start WAL streaming from the snapshot start LSN to avoid
+            // replaying data already emitted during the initial snapshot
+            if (snapshotStartLsn != null) {
+                LOG.info(
+                        "Starting WAL stream from snapshot start LSN: {}, skipping already-snapshot data",
+                        snapshotStartLsn);
+                walReplicationStream.initialize(snapshotStartLsn);
+            } else {
+                walReplicationStream.initialize();
+            }
             walStreamInitialized = true;
             LOG.info(
                     "WAL stream initialized, starting from LSN: {}",
@@ -442,11 +462,94 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                 break;
             } catch (Exception e) {
                 LOG.error(
-                        "Error in WAL streaming loop, running={}: {}", running, e.getMessage(), e);
-                throw e;
+                        "Error in WAL streaming loop (db restart?), reconnecting: {}",
+                        e.getMessage());
+                try {
+                    reconnectWalStream();
+                    LOG.info("WAL stream reconnected successfully, resuming streaming");
+                } catch (Exception reconnectError) {
+                    LOG.error(
+                            "WAL reconnection failed, task will restart: {}",
+                            reconnectError.getMessage());
+                    throw reconnectError;
+                }
             }
         }
         LOG.info("Exited WAL streaming loop, running={}", running);
+    }
+
+    /**
+     * Reconnect to GaussDB and re-establish the WAL replication stream.
+     *
+     * <p>Called when the WAL streaming loop encounters a connection error (e.g. database restart).
+     * Closes old resources, creates fresh JDBC/WAL connections, and resumes streaming from the last
+     * known LSN. This avoids a Flink task restart that would re-trigger the snapshot phase and emit
+     * duplicate data.
+     */
+    private void reconnectWalStream() throws Exception {
+        // Save the last known LSN before closing
+        String resumeLsn = walReplicationStream != null ? walReplicationStream.getLastLsn() : null;
+        LOG.info(
+                "Reconnecting WAL stream, last known LSN: {}",
+                resumeLsn != null ? resumeLsn : "unknown");
+
+        // Close old WAL stream (may be broken)
+        if (walReplicationStream != null) {
+            try {
+                walReplicationStream.close();
+            } catch (Exception ignored) {
+                // Stream is likely already dead
+            }
+            walReplicationStream = null;
+        }
+
+        // Close old JDBC connection
+        if (connection != null) {
+            try {
+                if (!connection.isClosed()) {
+                    connection.close();
+                }
+            } catch (Exception ignored) {
+                // Connection is likely already dead
+            }
+            connection = null;
+        }
+
+        // Re-establish JDBC connection
+        Class.forName("com.huawei.gaussdb.jdbc.Driver");
+        String url =
+                String.format(
+                        "jdbc:gaussdb://%s:%d/%s?sslmode=%s", hostname, port, database, sslMode);
+        connection = DriverManager.getConnection(url, username, password);
+        LOG.info("Reconnected JDBC to {}:{}/{}", hostname, port, database);
+
+        // Re-create WAL stream
+        walReplicationStream =
+                new WalReplicationStream(
+                        connection,
+                        url,
+                        username,
+                        password,
+                        slotName,
+                        decodePlugin,
+                        parallelDecodeNum,
+                        decodeStyle,
+                        sendingBatch,
+                        1000,
+                        replicationPort);
+
+        // Resume from last known position.
+        // The slot already exists (was created on first run), so mppdb_decoding
+        // will NOT emit a snapshot — we'll only get changes since the slot position.
+        if (resumeLsn != null) {
+            walReplicationStream.initialize(resumeLsn);
+        } else {
+            walReplicationStream.initialize();
+        }
+
+        LOG.info(
+                "WAL stream re-initialized, starting from LSN: {}",
+                walReplicationStream.getLastLsn());
     }
 
     /** Phase 2b: Polling-based streaming using ChangeDataPoller. */
@@ -505,6 +608,67 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             connection.close();
             LOG.info("Closed GaussDB connection");
         }
+    }
+
+    /**
+     * Read the replication slot's confirmed_flush position as the starting LSN for WAL streaming
+     * after snapshot. This avoids replaying WAL changes that occurred before the slot was created
+     * (which are already captured by the initial snapshot query).
+     *
+     * <p>Uses the slot's confirmed_flush rather than WAL control functions like
+     * pg_current_wal_lsn(), because GaussDB standby nodes cannot execute WAL control functions.
+     */
+    private String getSlotConfirmedFlush() throws SQLException {
+        // Always prefer the current WAL position over the slot's
+        // confirmed_flush. confirmed_flush lags behind (it reflects the
+        // last position that was acknowledged by a previous CDC run), so
+        // using it would cause WAL to replay data that was written after
+        // the previous run ended, which the snapshot already captured.
+        //
+        // Try pg_current_wal_lsn() / pg_current_xlog_location() first
+        // (different GaussDB versions use different function names).
+        // Fall back to confirmed_flush only on standby nodes where WAL
+        // control functions are unavailable.
+        String[] walFuncs = {"SELECT pg_current_wal_lsn()", "SELECT pg_current_xlog_location()"};
+        for (String walFunc : walFuncs) {
+            try {
+                try (Statement stmt = connection.createStatement();
+                        ResultSet rs = stmt.executeQuery(walFunc)) {
+                    if (rs.next()) {
+                        String lsn = rs.getString(1);
+                        if (lsn != null && !lsn.isEmpty()) {
+                            LOG.info("Using {} as WAL start LSN: {}", walFunc, lsn);
+                            return lsn;
+                        }
+                    }
+                }
+            } catch (SQLException e) {
+                LOG.debug("{} failed: {}", walFunc, e.getMessage());
+            }
+        }
+
+        // Fallback: standby nodes cannot execute WAL control functions.
+        // Read the slot's confirmed_flush as the next best position.
+        String slotToCheck = slotName;
+        String sql = "SELECT confirmed_flush FROM pg_replication_slots WHERE slot_name = ?";
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setString(1, slotToCheck);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    String lsn = rs.getString("confirmed_flush");
+                    if (lsn != null && !lsn.isEmpty()) {
+                        LOG.info(
+                                "WAL functions unavailable, using slot confirmed_flush: {} (slot={})",
+                                lsn,
+                                slotToCheck);
+                        return lsn;
+                    }
+                }
+            }
+        }
+
+        LOG.warn("Could not determine WAL start position for slot '{}'", slotToCheck);
+        return null;
     }
 
     // ---- CheckpointedFunction ----

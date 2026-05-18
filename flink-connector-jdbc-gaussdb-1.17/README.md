@@ -283,10 +283,12 @@ ON DUPLICATE KEY UPDATE col2=VALUES(col2)
 
 | 参数名 | 说明 | 可选值 |
 |-------|------|-------|
-| compatibleMode | GaussDB 兼容模式（连接层） | `mysql` / `postgresql` / `oracle` / `td`
+| compatibleMode | GaussDB 兼容模式（连接层） | `mysql` / `postgresql` / `oracle` / `td` |
 | characterEncoding | 字符编码 | `UTF-8`（推荐） |
+| sslmode | SSL 加密模式 | `disable` / `allow` / `prefer`（默认）/ `require` / `verify-ca` / `verify-full` |
 
 > **注意**：`compatibleMode` 参数仅影响 GaussDB 连接层的 SQL 解析兼容性，不再影响 UPSERT 语法。Connector 已统一使用 `ON DUPLICATE KEY UPDATE`。
+> **sslmode** 与 GaussDB JDBC 驱动默认行为一致，默认 `prefer`（优先 SSL，失败回退非 SSL）。内网环境可使用 `disable`，云环境建议 `require` 或更高。
 
 ### Sink 专用参数
 

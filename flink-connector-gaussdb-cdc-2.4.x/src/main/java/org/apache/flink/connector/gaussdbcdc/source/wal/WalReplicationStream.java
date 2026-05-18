@@ -81,6 +81,7 @@ public class WalReplicationStream {
     private String lastLsn;
     private boolean running = false;
     private boolean useReplicationApi = false;
+    private boolean firstSqlRead = true;
 
     private final MppdbBinaryDecoder binaryDecoder;
 
@@ -149,26 +150,48 @@ public class WalReplicationStream {
      * replication API is not available.
      */
     public void initialize() throws SQLException {
+        initialize("0/0");
+    }
+
+    /**
+     * Initialize the replication stream with a specific starting LSN.
+     *
+     * <p>After an initial snapshot has been taken, pass the LSN recorded just before the snapshot
+     * started so that WAL streaming skips changes already captured by the snapshot.
+     *
+     * @param startLsn the WAL LSN to start streaming from (e.g. "0/0" for beginning of slot, or a
+     *     specific LSN string like "0/12345678" to skip already-snapshot data)
+     */
+    public void initialize(String startLsn) throws SQLException {
         LOG.info(
-                "Initializing WAL replication stream: slot={}, plugin={}, parallel-decode-num={}, decode-style={}, sending-batch={}",
+                "Initializing WAL replication stream: slot={}, plugin={}, parallel-decode-num={}, decode-style={}, sending-batch={}, startLsn={}",
                 slotName,
                 pluginName,
                 parallelDecodeNum,
                 decodeStyle,
-                sendingBatch);
+                sendingBatch,
+                startLsn);
 
-        // Check if slot exists
+        // Check if slot exists; track whether we just created it.
+        // When a new slot is created and the JDBC replication API is used,
+        // mppdb_decoding emits a full consistency snapshot (snapbuild) as
+        // its first output batch. We consume and discard this snapshot below
+        // to avoid duplicating data already captured by the JDBC snapshot.
+        boolean slotWasNew = false;
         if (!slotExists()) {
             createSlot();
+            slotWasNew = true;
         }
 
-        // For SQL function mode: start from the slot's creation LSN (0/0 = from
-        // beginning of slot) rather than the current LSN. Starting from current LSN
-        // would skip all changes that occurred between slot creation and now.
+        // Use the provided startLsn instead of always starting from "0/0".
+        // - "0/0" means from the beginning of the slot (used when no snapshot was taken).
+        // - A specific LSN (e.g. recorded before snapshot) skips already-snapshot data
+        //   and avoids emitting duplicate INSERT events for rows already collected by
+        //   the initial snapshot query.
         // For streaming replication API: the stream starts from the slot position
         // automatically, so lastLsn is only used for SQL function fallback.
-        lastLsn = "0/0";
-        LOG.info("Starting from LSN: {} (slot position)", lastLsn);
+        lastLsn = startLsn;
+        LOG.info("Starting from LSN: {} (snapshot-start LSN)", lastLsn);
 
         // Try JDBC replication API first
         try {
@@ -180,9 +203,86 @@ public class WalReplicationStream {
                     "JDBC replication API not available, falling back to SQL function polling: {}",
                     e.getMessage());
             useReplicationApi = false;
+            firstSqlRead = true;
+        }
+
+        // When a new slot is created and the JDBC replication API is active,
+        // mppdb_decoding's first output batch is a full consistency snapshot of
+        // all current table data. Since the caller already performed a JDBC
+        // snapshot (SELECT *), this data would be duplicated. Consume and
+        // discard it now so downstream only sees incremental changes.
+        if (slotWasNew && useReplicationApi) {
+            try {
+                int consumed = consumeInitialSnapshot();
+                LOG.info(
+                        "Consumed {} mppdb_decoding snapshot changes from new slot '{}'",
+                        consumed,
+                        slotName);
+            } catch (Exception e) {
+                LOG.warn(
+                        "Failed to consume initial mppdb_decoding snapshot for slot '{}' "
+                                + "(duplicate data may appear): {}",
+                        slotName,
+                        e.getMessage());
+            }
+        }
+
+        // SQL function fallback path: pg_logical_slot_peek_changes(NULL, ...)
+        // reads from the slot's restart_lsn, which may be earlier than
+        // confirmed_flush and include WAL records already captured by the
+        // JDBC snapshot. Advance the slot to startLsn so that the first
+        // read only picks up changes after the snapshot position.
+        if (!useReplicationApi && !"0/0".equals(startLsn)) {
+            try {
+                advanceSlot();
+                LOG.info(
+                        "Advanced slot '{}' to snapshot LSN {} for SQL function polling",
+                        slotName,
+                        startLsn);
+            } catch (Exception e) {
+                LOG.warn(
+                        "Failed to advance slot '{}' to snapshot LSN: {}",
+                        slotName,
+                        e.getMessage());
+            }
         }
 
         running = true;
+    }
+
+    /**
+     * Read and discard the initial consistency snapshot emitted by mppdb_decoding when a brand-new
+     * replication slot starts streaming.
+     *
+     * @return number of snapshot changes consumed and discarded
+     */
+    private int consumeInitialSnapshot() throws SQLException {
+        LOG.debug("Reading initial mppdb_decoding snapshot data from new slot '{}'...", slotName);
+
+        // The JDBC replication stream may not have data available immediately
+        // after start(). Retry a few times with delays to catch the snapshot
+        // batch before the main read loop picks it up.
+        int totalConsumed = 0;
+        for (int attempt = 0; attempt < 5; attempt++) {
+            List<WalChange> batch = readChanges(10000);
+            if (batch.isEmpty()) {
+                // No data yet — wait and retry
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                continue;
+            }
+            totalConsumed += batch.size();
+            // Snapshot data typically arrives in one batch; if we got data,
+            // we're done.
+            break;
+        }
+
+        LOG.debug("Discarded {} snapshot changes from slot '{}'", totalConsumed, slotName);
+        return totalConsumed;
     }
 
     /**
@@ -639,14 +739,26 @@ public class WalReplicationStream {
             // For SQL function mode, parallel-decode-num alone controls parallelism.
         }
 
-        // Always pass NULL as the start LSN to pg_logical_slot_peek_changes.
-        // GaussDB peek_changes returns empty when a specific LSN is passed after
-        // pg_replication_slot_advance(). We rely on advanceSlot() to track progress
-        // and always read from the slot's current position.
+        // On the first read after initialization, pass the snapshot start LSN
+        // instead of NULL. This skips WAL records already captured by the JDBC
+        // snapshot. pg_logical_slot_peek_changes with a specific LSN may return
+        // empty after pg_replication_slot_advance() on some GaussDB versions,
+        // so we only use this on the first call and fall back to NULL afterwards.
+        String startLsnArg;
+        if (firstSqlRead && !"0/0".equals(lastLsn)) {
+            startLsnArg = "'" + lastLsn + "'";
+            firstSqlRead = false;
+            LOG.info(
+                    "First SQL read: passing start LSN {} to pg_logical_slot_peek_changes",
+                    lastLsn);
+        } else {
+            startLsnArg = "NULL";
+        }
+
         String sql =
                 String.format(
-                        "SELECT location AS lsn, xid, data FROM pg_logical_slot_peek_changes(?, NULL, ?, %s)",
-                        optionBuilder);
+                        "SELECT location AS lsn, xid, data FROM pg_logical_slot_peek_changes(?, %s, ?, %s)",
+                        startLsnArg, optionBuilder);
 
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             stmt.setString(1, slotName);

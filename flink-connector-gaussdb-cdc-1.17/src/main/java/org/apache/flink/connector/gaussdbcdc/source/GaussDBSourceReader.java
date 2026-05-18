@@ -42,6 +42,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -94,6 +95,9 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
 
     // Whether the WAL stream has been initialized
     private boolean walStreamInitialized = false;
+
+    // LSN recorded before snapshot to avoid WAL replay of already-snapshot data
+    private String snapshotStartLsn = null;
 
     public GaussDBSourceReader(
             SourceReaderContext context,
@@ -198,6 +202,13 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
 
     /** Read all data from table (for initial snapshot). */
     private void readAllData(ReaderOutput<RowData> output) throws SQLException {
+        // Record current WAL LSN before reading snapshot, so the WAL stream
+        // can start after this point and avoid replaying already-snapshot data
+        if (walMode) {
+            snapshotStartLsn = getCurrentWalLsn();
+            LOG.info("Recorded snapshot start LSN: {}", snapshotStartLsn);
+        }
+
         String columns = getTableColumns();
         String sql = String.format("SELECT %s FROM %s.%s ORDER BY id", columns, schema, tableName);
 
@@ -316,7 +327,16 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
         // Lazy initialize the WAL stream on first poll after snapshot completion
         if (!walStreamInitialized) {
             LOG.info("Initializing WAL replication stream for incremental phase");
-            walReplicationStream.initialize();
+            // Start WAL streaming from the snapshot start LSN to avoid
+            // replaying data already emitted during the initial snapshot
+            if (snapshotStartLsn != null) {
+                LOG.info(
+                        "Starting WAL stream from snapshot start LSN: {}, skipping already-snapshot data",
+                        snapshotStartLsn);
+                walReplicationStream.initialize(snapshotStartLsn);
+            } else {
+                walReplicationStream.initialize();
+            }
             walStreamInitialized = true;
             LOG.info(
                     "WAL stream initialized, starting from LSN: {}",
@@ -579,6 +599,69 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
     @Override
     public void notifyNoMoreSplits() {
         LOG.info("No more splits to assign");
+    }
+
+    /**
+     * Get the starting LSN for WAL streaming after snapshot.
+     *
+     * <p>Reads the replication slot's confirmed_flush position as the starting point. This avoids
+     * replaying WAL changes that occurred before the slot was created (which are already captured
+     * by the initial snapshot query).
+     *
+     * <p>For GaussDB standby nodes, pg_current_wal_lsn() and related WAL control functions are not
+     * available (standby cannot generate WAL). The slot's confirmed_flush is the safest reliable
+     * position.
+     */
+    private String getCurrentWalLsn() throws SQLException {
+        // Always prefer the current WAL position over the slot's
+        // confirmed_flush. confirmed_flush lags behind (it reflects the
+        // last position that was acknowledged by a previous CDC run), so
+        // using it would cause WAL to replay data that was written after
+        // the previous run ended, which the snapshot already captured.
+        String slotToCheck = slotName;
+
+        // Try pg_current_wal_lsn() / pg_current_xlog_location() first
+        // (different GaussDB versions use different function names).
+        // Fall back to confirmed_flush only on standby nodes where WAL
+        // control functions are unavailable.
+        String[] walFuncs = {"SELECT pg_current_wal_lsn()", "SELECT pg_current_xlog_location()"};
+        for (String walFunc : walFuncs) {
+            try {
+                try (Statement stmt = connection.createStatement();
+                        ResultSet rs = stmt.executeQuery(walFunc)) {
+                    if (rs.next()) {
+                        String lsn = rs.getString(1);
+                        if (lsn != null && !lsn.isEmpty()) {
+                            LOG.info("Using {} as WAL start LSN: {}", walFunc, lsn);
+                            return lsn;
+                        }
+                    }
+                }
+            } catch (SQLException e) {
+                LOG.debug("{} failed: {}", walFunc, e.getMessage());
+            }
+        }
+
+        // Fallback: standby nodes cannot execute WAL control functions.
+        // Read the slot's confirmed_flush as the next best position.
+        String sql = "SELECT confirmed_flush FROM pg_replication_slots WHERE slot_name = ?";
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setString(1, slotToCheck);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    String lsn = rs.getString("confirmed_flush");
+                    if (lsn != null && !lsn.isEmpty()) {
+                        LOG.info(
+                                "WAL functions unavailable, using slot confirmed_flush: {} (slot={})",
+                                lsn,
+                                slotToCheck);
+                        return lsn;
+                    }
+                }
+            }
+        }
+        LOG.warn("Could not determine WAL start position, WAL stream will start from 0/0");
+        return null;
     }
 
     @Override

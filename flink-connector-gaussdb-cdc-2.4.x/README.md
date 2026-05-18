@@ -32,10 +32,13 @@
 | `sending-batch` | `false` | `true` 时解码结果累积到 1MB 后批量发送，减少网络交互 |
 | `sslmode` | `prefer` | SSL 模式：`disable`/`allow`/`prefer`/`require`/`verify-ca`/`verify-full` |
 
-> **参数依赖关系**：
+> **参数依赖与前提**：
 > - `parallel-decode-num > 1` 时，`decode-style`（'b'/'j'/'t'）和 `sending-batch`（true/false）才生效
 > - `parallel-decode-num = 1` 时，底层强制使用 JSON 输出，不支持 `decode-style='b'`
 > - SQL 函数模式（`pg_logical_slot_peek_changes`）不支持 `decode-style` 和 `sending-batch`，只有 streaming replication API 支持
+> - **`replication.port`**：当 GaussDB `enable_thread_pool=on` 时必须设置为 HA 端口（通常为主端口+1，如 8000→8001），否则 WAL 自动回退到 SQL 函数轮询模式
+> - **`sslmode` + WAL 模式**：当 `wal.mode=true` 且 `enable_thread_pool=on` 未设 `replication.port` 时，建议 `sslmode=disable`。默认 `prefer` 可能因 SSL 握手与 replication 协议冲突导致数据返回异常
+> - **快照→增量衔接**：Connector 优先使用 `pg_current_xlog_location()` / `pg_current_wal_lsn()` 获取当前 WAL 位置，确保快照不会在增量阶段重复输出。仅在 standby 节点回退到 slot `confirmed_flush`
 
 ## 快速开始
 

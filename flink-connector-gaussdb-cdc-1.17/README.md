@@ -355,6 +355,11 @@ CREATE TABLE student (
 | slot.name | 否 | flink_cdc_slot | 复制槽名称 |
 | snapshot.mode | 否 | true | 是否先读取全量快照 |
 | chunk.size | 否 | 1000 | 分块大小 |
+| replication.port | 否 | — | **1.17 版本不支持此参数**。当 GaussDB `enable_thread_pool=on` 时，WAL 连接会自动回退到 SQL 函数轮询模式（`pg_logical_slot_peek_changes`），功能完整但无并行解码性能优势 |
+
+> **1.17 版本限制**：
+> - 不支持 `replication.port` 参数，WAL 流式复制 API 在 `enable_thread_pool=on` 环境下不可用
+> - 快照 → 增量衔接通过 slot `confirmed_flush` 实现，首次启动时自动使用 `pg_current_xlog_location()` 避免重复数据
 
 ### 并行解码参数（WAL 模式）
 
