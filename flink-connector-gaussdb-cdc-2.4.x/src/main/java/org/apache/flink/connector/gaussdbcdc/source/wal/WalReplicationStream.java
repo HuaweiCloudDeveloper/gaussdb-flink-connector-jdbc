@@ -1200,4 +1200,28 @@ public class WalReplicationStream {
     public boolean isUseReplicationApi() {
         return useReplicationApi;
     }
+
+    /**
+     * Compare two WAL LSNs. Returns true if {@code lsn} is strictly after {@code reference}. LSNs
+     * are compared numerically (segment number first, then offset).
+     */
+    public static boolean isLsnNewer(String lsn, String reference) {
+        if (lsn == null || reference == null) {
+            return false;
+        }
+        try {
+            long a = parseLsn(lsn);
+            long b = parseLsn(reference);
+            return a > b;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static long parseLsn(String lsn) {
+        String[] parts = lsn.split("/");
+        long seg = Long.parseLong(parts[0], 16);
+        long off = Long.parseLong(parts[1], 16);
+        return (seg << 32) | off;
+    }
 }

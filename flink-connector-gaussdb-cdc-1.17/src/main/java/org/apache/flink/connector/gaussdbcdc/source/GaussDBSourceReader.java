@@ -96,8 +96,9 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
     // Whether the WAL stream has been initialized
     private boolean walStreamInitialized = false;
 
-    // LSN recorded before snapshot to avoid WAL replay of already-snapshot data
+    // LSN recorded after snapshot to avoid WAL replay of already-snapshot data
     private String snapshotStartLsn = null;
+    private String lastConsumedLsn = null;
 
     public GaussDBSourceReader(
             SourceReaderContext context,
@@ -202,11 +203,10 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
 
     /** Read all data from table (for initial snapshot). */
     private void readAllData(ReaderOutput<RowData> output) throws SQLException {
-        // Record current WAL LSN before reading snapshot, so the WAL stream
-        // can start after this point and avoid replaying already-snapshot data
+        // Record WAL position BEFORE snapshot for diagnostics.
         if (walMode) {
-            snapshotStartLsn = getCurrentWalLsn();
-            LOG.info("Recorded snapshot start LSN: {}", snapshotStartLsn);
+            String preSnapshotLsn = getCurrentWalLsn();
+            LOG.info("Pre-snapshot WAL LSN: {}", preSnapshotLsn);
         }
 
         String columns = getTableColumns();
@@ -228,6 +228,14 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
         // Load snapshot into ChangeDataPoller so incremental polling works
         if (changeDataPoller != null) {
             changeDataPoller.loadSnapshot();
+        }
+
+        // Capture WAL position AFTER snapshot completes. This ensures the
+        // WAL stream starts from a position that is strictly after all
+        // data already captured by the snapshot, preventing duplicates.
+        if (walMode) {
+            snapshotStartLsn = getCurrentWalLsn();
+            LOG.info("Recorded post-snapshot WAL start LSN: {}", snapshotStartLsn);
         }
 
         LOG.info("Read {} rows from {}.{}", count, schema, tableName);
@@ -341,12 +349,32 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
             LOG.info(
                     "WAL stream initialized, starting from LSN: {}",
                     walReplicationStream.getLastLsn());
+
+            // Discard stale WAL data from the slot's existing position,
+            // which may be earlier than the snapshot LSN. This handles both
+            // JDBC Replication API and SQL function fallback.
+            try {
+                int discarded = walReplicationStream.readChanges(10000).size();
+                if (discarded > 0) {
+                    LOG.info("Discarded {} stale WAL changes after snapshot", discarded);
+                }
+                lastConsumedLsn = walReplicationStream.getLastLsn();
+            } catch (Exception e) {
+                LOG.warn("Failed to discard stale WAL data: {}", e.getMessage());
+            }
         }
 
         List<WalChange> changes = walReplicationStream.readChanges(1000);
 
         for (WalChange change : changes) {
             if (!change.isDataChange()) {
+                continue;
+            }
+
+            // Skip changes at or before the last consumed LSN.
+            if (lastConsumedLsn != null
+                    && change.getLsn() != null
+                    && !WalReplicationStream.isLsnNewer(change.getLsn(), lastConsumedLsn)) {
                 continue;
             }
 

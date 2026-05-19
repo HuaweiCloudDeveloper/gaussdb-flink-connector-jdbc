@@ -140,8 +140,11 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     // Cached column metadata for WAL change conversion
     private transient List<String> cachedColumnNames;
 
-    // LSN recorded before snapshot to avoid WAL replay of already-snapshot data
+    // LSN recorded after snapshot to avoid WAL replay of already-snapshot data
     private transient String snapshotStartLsn = null;
+    // Last consumed WAL LSN for duplicate filtering in SQL fallback mode
+    private transient String lastConsumedLsn = null;
+    private transient int walEmitCount = 0;
 
     // Checkpoint state
     private transient ListState<String> offsetState;
@@ -266,12 +269,10 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
     /** Phase 1: Read initial snapshot via JDBC SELECT with parallel split support. */
     private void readSnapshot(SourceContext<RowData> ctx) throws SQLException {
-        // Record current slot confirmed_flush before reading snapshot, so the
-        // WAL stream can start after this point and avoid replaying already-
-        // snapshot data that would cause duplicate INSERT events.
+        // Record WAL position BEFORE snapshot for diagnostics.
         if (walMode) {
-            snapshotStartLsn = getSlotConfirmedFlush();
-            LOG.info("Recorded snapshot start LSN: {}", snapshotStartLsn);
+            String preSnapshotLsn = getSlotConfirmedFlush();
+            LOG.info("Pre-snapshot WAL LSN: {}", preSnapshotLsn);
         }
 
         int subtaskIndex = getRuntimeContext().getIndexOfThisSubtask();
@@ -346,6 +347,14 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             }
             LOG.info("Snapshot read {} rows from {}.{}", count, schema, tableName);
         }
+
+        // Capture WAL position AFTER snapshot completes. This ensures the
+        // WAL stream starts from a position that is strictly after all
+        // data already captured by the snapshot, preventing duplicates.
+        if (walMode && getRuntimeContext().getIndexOfThisSubtask() == 0) {
+            snapshotStartLsn = getSlotConfirmedFlush();
+            LOG.info("Recorded post-snapshot WAL start LSN: {}", snapshotStartLsn);
+        }
     }
 
     /** Get the min and max id of the table for parallel split calculation. */
@@ -384,6 +393,26 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             LOG.info(
                     "WAL stream initialized, starting from LSN: {}",
                     walReplicationStream.getLastLsn());
+
+            // The JDBC replication API may replay WAL data from the slot's
+            // existing position, which can be earlier than the snapshot LSN.
+            // Read and discard initial data to establish a consumed LSN watermark.
+            // This handles both JDBC Replication API and SQL function fallback.
+            try {
+                List<WalChange> discard = walReplicationStream.readChanges(10000);
+                if (!discard.isEmpty()) {
+                    LOG.info("Discarded {} stale WAL changes after snapshot", discard.size());
+                    WalChange first = discard.get(0);
+                    WalChange last = discard.get(discard.size() - 1);
+                    LOG.info("[DIAG] Discarded range: {} → {}", first.getLsn(), last.getLsn());
+                } else {
+                    LOG.info("[DIAG] No stale data to discard");
+                }
+                lastConsumedLsn = walReplicationStream.getLastLsn();
+                LOG.info("[DIAG] lastConsumedLsn = {}", lastConsumedLsn);
+            } catch (Exception e) {
+                LOG.warn("Failed to discard stale WAL data: {}", e.getMessage());
+            }
         }
 
         LOG.info("Entering WAL streaming loop, running={}", running);
@@ -420,6 +449,20 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                         continue;
                     }
 
+                    // SQL fallback: skip changes at or before the last consumed LSN.
+                    // pg_logical_slot_peek_changes may return the same data
+                    // repeatedly if slot advancement is unavailable.
+                    if (lastConsumedLsn != null
+                            && change.getLsn() != null
+                            && !WalReplicationStream.isLsnNewer(change.getLsn(), lastConsumedLsn)) {
+                        LOG.info(
+                                "[DIAG] Filtered dup: change LSN={} <= lastConsumed={}, type={}, table={}",
+                                change.getLsn(),
+                                lastConsumedLsn,
+                                change.getType(),
+                                change.getTable());
+                        continue;
+                    }
                     WalChange.ChangeType changeType = change.getType();
                     RowData row = null;
                     try {
@@ -449,6 +492,16 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                     if (row != null) {
                         synchronized (ctx.getCheckpointLock()) {
                             ctx.collect(row);
+                        }
+                        // Log first few emissions to correlate with LSN filter
+                        if (walEmitCount < 3) {
+                            LOG.info(
+                                    "[DIAG] Emitted #{}, type={}, LSN={}, row={}",
+                                    walEmitCount + 1,
+                                    changeType,
+                                    change.getLsn(),
+                                    row);
+                            walEmitCount++;
                         }
                     }
                 }
