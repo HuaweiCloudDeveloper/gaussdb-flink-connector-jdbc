@@ -554,7 +554,27 @@ public class WalReplicationStream {
             Method getLastReceiveLSN = replicationStream.getClass().getMethod("getLastReceiveLSN");
             Object lsnObj = getLastReceiveLSN.invoke(replicationStream);
             if (lsnObj != null) {
-                return lsnObj.toString();
+                // Try asString() first — returns standard LSN format like "0/6D1DD098".
+                // toString() may return decoration like "LSN{0/6D1DD098}" which
+                // parseLsn() cannot handle, causing isLsnNewer() to filter all changes.
+                try {
+                    Method asString = lsnObj.getClass().getMethod("asString");
+                    Object str = asString.invoke(lsnObj);
+                    if (str != null) {
+                        return str.toString();
+                    }
+                } catch (NoSuchMethodException e) {
+                    // asString() not available, try toString()
+                }
+                // Fallback: parse LogSequenceNumber toString() format
+                // like "LSN{0/6D1DD098}" or "LogSequenceNumber{segment=0, offset=72060840}"
+                String raw = lsnObj.toString();
+                java.util.regex.Matcher m =
+                        java.util.regex.Pattern.compile("([0-9A-Fa-f]+/[0-9A-Fa-f]+)").matcher(raw);
+                if (m.find()) {
+                    return m.group(1);
+                }
+                return raw;
             }
         } catch (Exception e) {
             LOG.debug("Could not get last receive LSN: {}", e.getMessage());

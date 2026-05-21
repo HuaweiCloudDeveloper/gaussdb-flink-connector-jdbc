@@ -354,11 +354,17 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
             // which may be earlier than the snapshot LSN. This handles both
             // JDBC Replication API and SQL function fallback.
             try {
-                int discarded = walReplicationStream.readChanges(10000).size();
-                if (discarded > 0) {
-                    LOG.info("Discarded {} stale WAL changes after snapshot", discarded);
+                List<WalChange> discard = walReplicationStream.readChanges(10000);
+                if (!discard.isEmpty()) {
+                    LOG.info("Discarded {} stale WAL changes after snapshot", discard.size());
+                    // Use the last decoded change's LSN as the watermark.
+                    // Do NOT use getLastLsn() — the JDBC driver's
+                    // getLastReceiveLSN() may return a non-standard format.
+                    // Do NOT clamp to snapshotStartLsn — pg_current_xlog_location
+                    // can be in a different WAL segment than the slot's data,
+                    // and clamping would filter ALL incremental changes.
+                    lastConsumedLsn = discard.get(discard.size() - 1).getLsn();
                 }
-                lastConsumedLsn = walReplicationStream.getLastLsn();
             } catch (Exception e) {
                 LOG.warn("Failed to discard stale WAL data: {}", e.getMessage());
             }
@@ -461,11 +467,14 @@ public class GaussDBSourceReader implements SourceReader<RowData, GaussDBSplit> 
                 return DecimalData.fromBigDecimal(
                         numericBd, numericBd.precision(), numericBd.scale());
             case 1114: // timestamp
+                java.time.format.DateTimeFormatter tsFormatter =
+                        new java.time.format.DateTimeFormatterBuilder()
+                                .appendPattern("yyyy-MM-dd HH:mm:ss")
+                                .appendFraction(
+                                        java.time.temporal.ChronoField.NANO_OF_SECOND, 0, 6, true)
+                                .toFormatter();
                 return TimestampData.fromLocalDateTime(
-                        java.time.LocalDateTime.parse(
-                                value,
-                                java.time.format.DateTimeFormatter.ofPattern(
-                                        "yyyy-MM-dd HH:mm:ss[.SSSSSS]")));
+                        java.time.LocalDateTime.parse(value, tsFormatter));
             case 1082: // date
                 return (int) java.time.LocalDate.parse(value).toEpochDay();
             default:

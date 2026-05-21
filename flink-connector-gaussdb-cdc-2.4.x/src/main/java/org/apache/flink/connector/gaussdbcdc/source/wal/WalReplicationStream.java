@@ -83,6 +83,10 @@ public class WalReplicationStream {
     private boolean useReplicationApi = false;
     private boolean firstSqlRead = true;
 
+    // DIAG: track null buffer reads
+    private transient int diagNullReadCount = 0;
+    private transient int diagTotalReadCalls = 0;
+
     private final MppdbBinaryDecoder binaryDecoder;
 
     /** JDBC replication stream (PGReplicationStream), may be null if API unavailable. */
@@ -457,19 +461,16 @@ public class WalReplicationStream {
         List<WalChange> changes = new ArrayList<>();
 
         try {
+            diagTotalReadCalls++;
+
             // Check if stream is still active
             Method isClosedMethod = replicationStream.getClass().getMethod("isClosed");
             boolean isClosed = (Boolean) isClosedMethod.invoke(replicationStream);
             if (isClosed) {
-                LOG.warn("Replication stream is closed");
+                LOG.warn("[DIAG] Replication stream is CLOSED — WAL streaming stopped!");
                 running = false;
                 return changes;
             }
-
-            LOG.debug(
-                    "Replication stream alive, useReplicationApi={}, lastLsn={}",
-                    useReplicationApi,
-                    lastLsn);
 
             // Read changes using readPending() (non-blocking).
             // If readPending() returns null, the caller will sleep and retry.
@@ -509,10 +510,12 @@ public class WalReplicationStream {
                         forceUpdateStatusMethod.invoke(replicationStream);
                         buffer = (ByteBuffer) readPendingMethod.invoke(replicationStream);
                         if (buffer == null || !buffer.hasRemaining()) {
+                            diagNullReadCount++;
                             break;
                         }
                     } else {
                         // Return what we have so far; the caller will poll again.
+                        diagNullReadCount++;
                         break;
                     }
                 }
@@ -575,6 +578,18 @@ public class WalReplicationStream {
                         changes.size(),
                         batchCount);
             }
+
+            // Periodic heartbeat: every 30 read calls
+            if (diagTotalReadCalls % 30 == 0) {
+                LOG.info(
+                        "[DIAG] WalStream: readCalls={}, nullReads={}, "
+                                + "batchesThisCall={}, changesThisCall={}, lastLsn={}",
+                        diagTotalReadCalls,
+                        diagNullReadCount,
+                        batchCount,
+                        changes.size(),
+                        lastLsn);
+            }
         } catch (java.lang.reflect.InvocationTargetException e) {
             Throwable cause = e.getCause();
             if (cause instanceof SQLException) {
@@ -599,7 +614,28 @@ public class WalReplicationStream {
             Method getLastReceiveLSN = replicationStream.getClass().getMethod("getLastReceiveLSN");
             Object lsnObj = getLastReceiveLSN.invoke(replicationStream);
             if (lsnObj != null) {
-                return lsnObj.toString();
+                // Try asString() first — returns standard LSN format like "0/6D1DD098".
+                // toString() may return decoration like "LSN{0/6D1DD098}" which
+                // parseLsn() cannot handle, causing isLsnNewer() to filter all changes.
+                try {
+                    Method asString = lsnObj.getClass().getMethod("asString");
+                    Object str = asString.invoke(lsnObj);
+                    if (str != null) {
+                        return str.toString();
+                    }
+                } catch (NoSuchMethodException e) {
+                    // asString() not available, try toString()
+                }
+                // Fallback: parse LogSequenceNumber toString() format
+                // like "LSN{0/6D1DD098}" or "LogSequenceNumber{segment=0, offset=72060840}"
+                String raw = lsnObj.toString();
+                // Try "X/YYYYYYYY" format embedded in decorators
+                java.util.regex.Matcher m =
+                        java.util.regex.Pattern.compile("([0-9A-Fa-f]+/[0-9A-Fa-f]+)").matcher(raw);
+                if (m.find()) {
+                    return m.group(1);
+                }
+                return raw;
             }
         } catch (Exception e) {
             LOG.debug("Could not get last receive LSN: {}", e.getMessage());

@@ -146,6 +146,12 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private transient String lastConsumedLsn = null;
     private transient int walEmitCount = 0;
 
+    // DIAG counters — track WAL streaming loop health
+    private transient int diagReadCount = 0;
+    private transient int diagDataChangeCount = 0;
+    private transient int diagFilteredCount = 0;
+    private transient int diagEmptyCount = 0;
+
     // Checkpoint state
     private transient ListState<String> offsetState;
 
@@ -405,11 +411,25 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                     WalChange first = discard.get(0);
                     WalChange last = discard.get(discard.size() - 1);
                     LOG.info("[DIAG] Discarded range: {} → {}", first.getLsn(), last.getLsn());
+                    // Use the last decoded change's LSN as the watermark.
+                    // Do NOT use getLastLsn() — the JDBC driver's
+                    // getLastReceiveLSN() may return a LogSequenceNumber
+                    // toString() the parseLsn() cannot handle.
+                    // Do NOT clamp to snapshotStartLsn — pg_current_xlog_location
+                    // can be in a different WAL segment than the slot's data,
+                    // and clamping would filter ALL incremental changes.
+                    lastConsumedLsn = last.getLsn();
                 } else {
                     LOG.info("[DIAG] No stale data to discard");
                 }
-                lastConsumedLsn = walReplicationStream.getLastLsn();
                 LOG.info("[DIAG] lastConsumedLsn = {}", lastConsumedLsn);
+                LOG.info(
+                        "[DIAG] Watermark: snapshotStartLsn={}, lastConsumedLsn={}, "
+                                + "useReplicationApi={}, walMode={}",
+                        snapshotStartLsn,
+                        lastConsumedLsn,
+                        walReplicationStream.isUseReplicationApi(),
+                        walMode);
             } catch (Exception e) {
                 LOG.warn("Failed to discard stale WAL data: {}", e.getMessage());
             }
@@ -419,12 +439,38 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         while (running) {
             try {
                 List<WalChange> changes = walReplicationStream.readChanges(1000);
+                diagReadCount++;
                 String streamLsn = walReplicationStream.getLastLsn();
+
+                int dataChanges = 0;
+                int tableMatches = 0;
+                int lsnFiltered = 0;
+                for (WalChange c : changes) {
+                    if (c.isDataChange()) dataChanges++;
+                }
+
                 if (!changes.isEmpty()) {
                     LOG.info(
-                            "Read {} changes from WAL stream, running={}, lastLsn={}",
+                            "Read {} changes from WAL stream ({} data, lastLsn={}), running={}",
                             changes.size(),
-                            running,
+                            dataChanges,
+                            streamLsn,
+                            running);
+                } else {
+                    diagEmptyCount++;
+                }
+
+                // Periodic heartbeat: every 30 reads (even if idle)
+                if (diagReadCount % 30 == 0) {
+                    LOG.info(
+                            "[DIAG] Heartbeat: reads={}, totalDataChanges={}, "
+                                    + "lsnFiltered={}, emptyReads={}, "
+                                    + "lastConsumedLsn={}, lastStreamLsn={}",
+                            diagReadCount,
+                            diagDataChangeCount,
+                            diagFilteredCount,
+                            diagEmptyCount,
+                            lastConsumedLsn,
                             streamLsn);
                 }
 
@@ -442,19 +488,16 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                             || changeTable == null
                             || !changeSchema.equalsIgnoreCase(schema)
                             || !changeTable.equalsIgnoreCase(tableName)) {
-                        LOG.debug(
-                                "Skipping change from non-target table: {}.{}",
-                                changeSchema,
-                                changeTable);
                         continue;
                     }
+                    tableMatches++;
+                    diagDataChangeCount++;
 
-                    // SQL fallback: skip changes at or before the last consumed LSN.
-                    // pg_logical_slot_peek_changes may return the same data
-                    // repeatedly if slot advancement is unavailable.
+                    // Skip changes at or before the last consumed LSN.
                     if (lastConsumedLsn != null
                             && change.getLsn() != null
                             && !WalReplicationStream.isLsnNewer(change.getLsn(), lastConsumedLsn)) {
+                        diagFilteredCount++;
                         LOG.info(
                                 "[DIAG] Filtered dup: change LSN={} <= lastConsumed={}, type={}, table={}",
                                 change.getLsn(),
@@ -462,6 +505,17 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                                 change.getType(),
                                 change.getTable());
                         continue;
+                    }
+
+                    // This change passed all filters — log first 5 for diag
+                    if (walEmitCount < 5) {
+                        LOG.info(
+                                "[DIAG] PASS #{}: type={}, LSN={}, table={}.{}",
+                                walEmitCount + 1,
+                                change.getType(),
+                                change.getLsn(),
+                                change.getSchema(),
+                                change.getTable());
                     }
                     WalChange.ChangeType changeType = change.getType();
                     RowData row = null;
