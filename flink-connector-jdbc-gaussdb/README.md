@@ -33,7 +33,9 @@
 
 ### 3. 内置 GaussDB JDBC 驱动
 
-Connector JAR 已内置 GaussDB JDBC 驱动，无需单独部署。
+Connector JAR **默认不包含** GaussDB JDBC 驱动（驱动为 `provided` scope）。部署时需要将 GaussDB JDBC 驱动 JAR 单独放入 `$FLINK_HOME/lib/`。
+
+如需打出内置驱动的 fat JAR，参见 [瘦包与胖包切换](#瘦包与胖包切换)。
 
 ## 版本兼容性
 
@@ -50,10 +52,13 @@ Connector JAR 已内置 GaussDB JDBC 驱动，无需单独部署。
 1. **Flink JDBC Connector**（必选）
    - `flink-connector-jdbc-3.1.2-1.17.jar`（Flink 1.17）或对应的 Flink 2.x 版本
 
-2. **GaussDB JDBC Connector**（必选，已内置 GaussDB JDBC 驱动）
+2. **GaussDB JDBC Connector**（必选）
    - `flink-connector-jdbc-gaussdb-3.3.0-1.20.jar`
 
-> Connector JAR 已通过 maven-shade-plugin 内置 `gaussdbjdbc` 驱动，无需单独部署 GaussDB JDBC 驱动。
+3. **GaussDB JDBC 驱动**（必选，Connector 默认不包含）
+   - `gaussdbjdbc-506.0.0.b058.jar` 或 `gaussdbjdbc-506.0.0.b058-jdk7.jar`
+
+> Connector JAR 默认以 `provided` scope 依赖 GaussDB JDBC 驱动，不打包进 JAR。部署时需将驱动 JAR 单独放入 `$FLINK_HOME/lib/`。如需 fat JAR（内置驱动），参见 [瘦包与胖包切换](#瘦包与胖包切换)。
 
 ## 快速开始
 
@@ -166,6 +171,74 @@ INSERT INTO student_sink SELECT * FROM student_cdc;
 2. **类加载器**：如遇 `NoClassDefFoundError`，设置 `classloader.resolve-order: parent-first`。
 3. **驱动类名**：建议在 `WITH` 中显式指定 `'driver' = 'com.huawei.gaussdb.jdbc.Driver'`。
 4. **与 PostgreSQL JDBC 共存**：`flink-connector-jdbc-gaussdb` 和 PostgreSQL JDBC driver 可安全共存于 `lib/`，类路径无冲突。
+
+## 瘦包与胖包切换
+
+### 默认情况（瘦包）
+
+本模块默认打出**瘦包**（thin JAR），`gaussdbjdbc` 为 `provided` scope，不打包进 Connector JAR。部署时需将 GaussDB JDBC 驱动单独放入 `$FLINK_HOME/lib/`。
+
+### 切换为胖包（内置驱动）
+
+如需打出内置驱动的 fat JAR，在 `pom.xml` 中做两处修改：
+
+**步骤 1**：将 `gaussdbjdbc` 依赖的 scope 改为 `compile`（或删除 `<scope>provided</scope>`）：
+
+```xml
+<dependency>
+    <groupId>com.huaweicloud.gaussdb</groupId>
+    <artifactId>gaussdbjdbc</artifactId>
+    <version>${gaussdb.version}</version>
+    <!-- 删除下面这行，或改为 compile -->
+    <!-- <scope>provided</scope> -->
+</dependency>
+```
+
+**步骤 2**：添加 maven-shade-plugin 将驱动打包进 JAR：
+
+```xml
+<build>
+    <plugins>
+        <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-shade-plugin</artifactId>
+            <version>3.4.1</version>
+            <executions>
+                <execution>
+                    <phase>package</phase>
+                    <goals>
+                        <goal>shade</goal>
+                    </goals>
+                    <configuration>
+                        <createDependencyReducedPom>false</createDependencyReducedPom>
+                        <artifactSet>
+                            <includes>
+                                <include>com.huaweicloud.gaussdb:gaussdbjdbc</include>
+                            </includes>
+                        </artifactSet>
+                        <transformers>
+                            <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                        </transformers>
+                    </configuration>
+                </execution>
+            </executions>
+        </plugin>
+    </plugins>
+</build>
+```
+
+**步骤 3**：重新打包：
+
+```bash
+mvn clean package -pl flink-connector-jdbc-gaussdb -am -DskipTests
+```
+
+### 两种方式对比
+
+| 方式 | JAR 大小 | 内置驱动 | 适用场景 |
+|------|---------|---------|---------|
+| 瘦包（默认） | ~50 KB | ❌ 不包含 | 已有驱动管理规范，驱动统一部署在 `lib/` |
+| 胖包 | ~1.6 MB | ✅ 内置 | 部署简单，无需单独管理驱动 |
 
 ## 许可证
 

@@ -58,7 +58,9 @@
 
 ### 依赖 JAR 包
 
-所有 Connector JAR 已内置 GaussDB JDBC 驱动（`gaussdbjdbc-506.0.0.b058-jdk7`，兼容 JDK 8/11），无需额外部署。
+除 `flink-connector-jdbc-gaussdb`（2.x/3.x）外，其余 Connector JAR 默认已内置 GaussDB JDBC 驱动（`gaussdbjdbc-506.0.0.b058-jdk7`，兼容 JDK 8/11）。`flink-connector-jdbc-gaussdb` 默认以 `provided` scope 依赖驱动，部署时需单独放置驱动 JAR。
+
+如需打出不含驱动的瘦包，参见 [瘦包打包](#瘦包打包thin-jar)。
 
 **JDBC Connector 还需要**：Flink 官方 `flink-connector-jdbc` 对应版本 JAR。
 
@@ -352,6 +354,49 @@ Connector 基于 Debezium PostgreSQL Connector 构建，通过以下方式适配
 - [CDC 1.17 详细文档](./flink-connector-gaussdb-cdc-1.17/README.md)
 - [CDC 2.4.x 详细文档](./flink-connector-gaussdb-cdc-2.4.x/README.md)
 - [CDC 3.6.x 详细文档](./flink-connector-gaussdb-cdc-3.6.x/README.md)
+
+## 瘦包打包（Thin JAR）
+
+默认打包产物为 fat JAR，即 Connector JAR 内部已包含 GaussDB JDBC 驱动，部署时无需单独放置驱动 JAR。
+
+如果环境中已统一管理 GaussDB JDBC 驱动（如已放入 `$FLINK_HOME/lib/`），或需要灵活切换驱动版本，可打出不含驱动的瘦包（thin JAR），体积大幅减小。
+
+### 整体思路
+
+瘦包打包的核心改动：将 `pom.xml` 中 GaussDB JAR 驱动依赖的 scope 改为 `provided`，并移除 maven-shade-plugin 中对驱动 JAR 的打包配置（如有）。
+
+### 各模块瘦包打包方法
+
+各模块的 shade 配置和驱动打包方式不同，请参考对应模块的 README：
+
+| 模块 | 默认打包方式 | 瘦包文档 |
+|------|------------|---------|
+| `flink-connector-jdbc-gaussdb` (2.x/3.x) | **瘦包**（驱动 `provided`） | [README](./flink-connector-jdbc-gaussdb/README.md#瘦包与胖包切换) |
+| `flink-connector-jdbc-gaussdb-1.17` | fat JAR | [README](./flink-connector-jdbc-gaussdb-1.17/README.md#瘦包打包不内置驱动) |
+| `flink-connector-gaussdb-cdc-1.17` | fat JAR | [README](./flink-connector-gaussdb-cdc-1.17/README.md#瘦包打包) |
+| `flink-connector-gaussdb-cdc-2.4.x` | fat JAR | [README](./flink-connector-gaussdb-cdc-2.4.x/README.md#瘦包打包) |
+| `flink-connector-gaussdb-cdc-3.6.x` | fat JAR | [README](./flink-connector-gaussdb-cdc-3.6.x/README.md#瘦包打包) |
+
+### 瘦包部署注意事项
+
+打出瘦包后，需要将 GaussDB JDBC 驱动单独部署到 Flink `lib/` 目录：
+
+```bash
+# JDK 8/11 兼容版（推荐）
+curl -o $FLINK_HOME/lib/gaussdbjdbc.jar \
+  "https://repo1.maven.org/maven2/com/huaweicloud/gaussdb/gaussdbjdbc/506.0.0.b058-jdk7/gaussdbjdbc-506.0.0.b058-jdk7.jar"
+
+# 或 JDK 17+ 完整版
+curl -o $FLINK_HOME/lib/gaussdbjdbc.jar \
+  "https://repo1.maven.org/maven2/com/huaweicloud/gaussdb/gaussdbjdbc/506.0.0.b058/gaussdbjdbc-506.0.0.b058.jar"
+```
+
+### 两种打包方式对比
+
+| 方式 | JAR 大小（CDC 3.6.x 参考） | 内置驱动 | 适用场景 |
+|------|--------------------------|---------|---------|
+| fat JAR | ~30 MB | ✅ 内置 | 推荐，部署简单，无需管理驱动 |
+| thin JAR | ~数十 KB ~ 数 MB | ❌ 不包含 | 已有驱动管理规范，或需要灵活切换驱动版本 |
 
 ## 获取帮助
 

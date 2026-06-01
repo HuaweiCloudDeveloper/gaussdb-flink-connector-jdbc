@@ -313,6 +313,51 @@ $FLINK_HOME/bin/start-cluster.sh
 $FLINK_HOME/bin/sql-client.sh -f test_cdc.sql
 ```
 
+## 瘦包打包
+
+默认打包产物为 fat JAR，Connector JAR 内部已包含 GaussDB JDBC 驱动（`gaussdbjdbc-506.0.0.b058-jdk7`），部署时无需单独放置驱动 JAR。
+
+如果环境中已统一管理 GaussDB JDBC 驱动（如已放入 `$FLINK_HOME/lib/`），或需要灵活切换驱动版本，可打出不含驱动的瘦包（thin JAR）。
+
+### 打包瘦包
+
+修改 `flink-connector-gaussdb-cdc-3.6.x/pom.xml`，将 `gaussdbjdbc` 依赖的 scope 改为 `provided`：
+
+```xml
+<!-- GaussDB JDBC Driver (replaces PostgreSQL driver) -->
+<dependency>
+    <groupId>com.huaweicloud.gaussdb</groupId>
+    <artifactId>gaussdbjdbc</artifactId>
+    <version>${gaussdb.jdbc.version}</version>
+    <scope>provided</scope>  <!-- 添加这一行 -->
+</dependency>
+```
+
+> **注意**：maven-shade-plugin 中的 `org.postgresql` → `com.huawei.gaussdb.jdbc` relocation 和 Debezium 过滤器是 CDC 功能必需的，**不可移除**。改为 `provided` 后，shade 插件会自动排除 GaussDB JDBC 驱动 JAR，其余 shade 配置无需修改。
+
+重新打包：
+
+```bash
+mvn clean package -pl flink-connector-gaussdb-cdc-3.6.x -am -DskipTests
+```
+
+### 瘦包部署
+
+打出瘦包后，需将 GaussDB JDBC 驱动单独放入 Flink `lib/` 目录：
+
+```bash
+# JDK 8/11 兼容版（推荐）
+curl -o $FLINK_HOME/lib/gaussdbjdbc.jar \
+  "https://repo1.maven.org/maven2/com/huaweicloud/gaussdb/gaussdbjdbc/506.0.0.b058-jdk7/gaussdbjdbc-506.0.0.b058-jdk7.jar"
+```
+
+### 两种打包方式对比
+
+| 方式 | JAR 大小 | 内置驱动 | 适用场景 |
+|------|---------|---------|---------|
+| fat JAR（默认） | ~30 MB | ✅ 内置 | 推荐，部署简单 |
+| thin JAR | ~数 MB | ❌ 不包含 | 已有驱动管理规范，需灵活切换驱动版本 |
+
 ## 许可证
 
 本项目基于 Apache License 2.0 开源许可证。

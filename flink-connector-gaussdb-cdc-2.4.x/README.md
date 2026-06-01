@@ -255,6 +255,51 @@ mvn test -pl flink-connector-gaussdb-cdc-2.4.x \
 
 > **说明**：`parallel-decode-num=1` 时底层强制使用 JSON，不支持 binary。8 线程 binary 相比串行 JSON 提升约 **58%**。实际收益与数据规模、网络延迟、GaussDB 实例负载有关。
 
+## 瘦包打包
+
+默认打包产物为 fat JAR，Connector JAR 内部已包含 GaussDB JDBC 驱动（`gaussdbjdbc-506.0.0.b058-jdk7`），部署时无需单独放置驱动 JAR。
+
+如果环境中已统一管理 GaussDB JDBC 驱动（如已放入 `$FLINK_HOME/lib/`），或需要灵活切换驱动版本，可打出不含驱动的瘦包（thin JAR）。
+
+### 打包瘦包
+
+修改 `flink-connector-gaussdb-cdc-2.4.x/pom.xml`，将 `gaussdbjdbc` 依赖的 scope 改为 `provided`：
+
+```xml
+<!-- GaussDB JDBC Driver (packaged into connector jar) -->
+<dependency>
+    <groupId>com.huaweicloud.gaussdb</groupId>
+    <artifactId>gaussdbjdbc</artifactId>
+    <version>${gaussdb.jdbc.version}</version>
+    <scope>provided</scope>  <!-- 添加这一行 -->
+</dependency>
+```
+
+> 本模块的 maven-shade-plugin 没有显式 `<includes>` 指定要打包的依赖，改为 `provided` 后 shade 插件会自动排除该依赖。
+
+重新打包：
+
+```bash
+mvn clean package -pl flink-connector-gaussdb-cdc-2.4.x -am -DskipTests
+```
+
+### 瘦包部署
+
+打出瘦包后，需将 GaussDB JDBC 驱动单独放入 Flink `lib/` 目录：
+
+```bash
+# JDK 8/11 兼容版（推荐）
+curl -o $FLINK_HOME/lib/gaussdbjdbc.jar \
+  "https://repo1.maven.org/maven2/com/huaweicloud/gaussdb/gaussdbjdbc/506.0.0.b058-jdk7/gaussdbjdbc-506.0.0.b058-jdk7.jar"
+```
+
+### 两种打包方式对比
+
+| 方式 | JAR 大小 | 内置驱动 | 适用场景 |
+|------|---------|---------|---------|
+| fat JAR（默认） | ~1.8 MB | ✅ 内置 | 推荐，部署简单 |
+| thin JAR | ~80 KB | ❌ 不包含 | 已有驱动管理规范，需灵活切换驱动版本 |
+
 ## 许可证
 
 本项目基于 Apache License 2.0 开源许可证。
