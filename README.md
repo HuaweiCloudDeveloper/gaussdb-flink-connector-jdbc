@@ -68,6 +68,34 @@
 
 > **注意**：CDC 3.6.x 在某些 Flink 环境下可能需要将 GaussDB JDBC 驱动 JAR 单独放入 `$FLINK_HOME/lib/` 以解决 ServiceLoader 类加载冲突。
 
+## 下载
+
+### 预编译 JAR 包
+
+从 [GitHub Releases](https://github.com/jarrenL/gaussdb-flink-connector-jdbc/releases) 下载对应模块的 Fat JAR（内置驱动）或 Thin JAR（不含驱动）。
+
+> 版本：**3.3.0-1.20** | GaussDB JDBC 驱动：`gaussdbjdbc-506.0.0.b058-jdk7`（兼容 JDK 8/11）
+
+| 模块 | Fat JAR（含驱动） | Thin JAR（不含驱动） |
+|------|-----------------|-------------------|
+| `flink-connector-jdbc-gaussdb` (Flink 2.x/3.x) | [⬇ fat](https://github.com/jarrenL/gaussdb-flink-connector-jdbc/releases/download/v3.3.0-1.20/flink-connector-jdbc-gaussdb-3.3.0-1.20-fat.jar) | [⬇ thin](https://github.com/jarrenL/gaussdb-flink-connector-jdbc/releases/download/v3.3.0-1.20/flink-connector-jdbc-gaussdb-3.3.0-1.20-thin.jar) |
+| `flink-connector-jdbc-gaussdb-1.17` (Flink 1.17) | [⬇ fat](https://github.com/jarrenL/gaussdb-flink-connector-jdbc/releases/download/v3.3.0-1.20/flink-connector-jdbc-gaussdb-1.17-3.3.0-1.20-fat.jar) | [⬇ thin](https://github.com/jarrenL/gaussdb-flink-connector-jdbc/releases/download/v3.3.0-1.20/flink-connector-jdbc-gaussdb-1.17-3.3.0-1.20-thin.jar) |
+| `flink-connector-gaussdb-cdc-1.17` (Flink 1.17) | [⬇ fat](https://github.com/jarrenL/gaussdb-flink-connector-jdbc/releases/download/v3.3.0-1.20/flink-connector-gaussdb-cdc-1.17-3.3.0-1.20-fat.jar) | [⬇ thin](https://github.com/jarrenL/gaussdb-flink-connector-jdbc/releases/download/v3.3.0-1.20/flink-connector-gaussdb-cdc-1.17-3.3.0-1.20-thin.jar) |
+| `flink-connector-gaussdb-cdc-2.4.x` (Flink 1.13~1.20) | [⬇ fat](https://github.com/jarrenL/gaussdb-flink-connector-jdbc/releases/download/v3.3.0-1.20/flink-connector-gaussdb-cdc-2.4.x-3.3.0-1.20-fat.jar) | [⬇ thin](https://github.com/jarrenL/gaussdb-flink-connector-jdbc/releases/download/v3.3.0-1.20/flink-connector-gaussdb-cdc-2.4.x-3.3.0-1.20-thin.jar) |
+| `flink-connector-gaussdb-cdc-3.6.x` (Flink 1.18+) | [⬇ fat](https://github.com/jarrenL/gaussdb-flink-connector-jdbc/releases/download/v3.3.0-1.20/flink-connector-gaussdb-cdc-3.6.x-3.3.0-1.20-fat.jar) | [⬇ thin](https://github.com/jarrenL/gaussdb-flink-connector-jdbc/releases/download/v3.3.0-1.20/flink-connector-gaussdb-cdc-3.6.x-3.3.0-1.20-thin.jar) |
+
+- **Fat JAR**：已内置 GaussDB JDBC 驱动，放入 `$FLINK_HOME/lib/` 即可使用
+- **Thin JAR**：不含驱动，需单独下载 GaussDB JDBC 驱动并放入 `$FLINK_HOME/lib/`
+
+#### GaussDB JDBC 驱动（Thin JAR 用户需要）
+
+| 驱动版本 | JDK 兼容 | 下载 |
+|---------|---------|------|
+| `gaussdbjdbc-506.0.0.b058-jdk7` | JDK 8 / 11 ✅ | [⬇ 下载](https://repo1.maven.org/maven2/com/huaweicloud/gaussdb/gaussdbjdbc/506.0.0.b058-jdk7/gaussdbjdbc-506.0.0.b058-jdk7.jar) |
+| `gaussdbjdbc-506.0.0.b058` | JDK 17+ | [⬇ 下载](https://repo1.maven.org/maven2/com/huaweicloud/gaussdb/gaussdbjdbc/506.0.0.b058/gaussdbjdbc-506.0.0.b058.jar) |
+
+也可以从源码自行构建，详见 [瘦包打包](#瘦包打包thin-jar)。
+
 ## 快速开始
 
 ### JDBC Connector（Sink/Source）
