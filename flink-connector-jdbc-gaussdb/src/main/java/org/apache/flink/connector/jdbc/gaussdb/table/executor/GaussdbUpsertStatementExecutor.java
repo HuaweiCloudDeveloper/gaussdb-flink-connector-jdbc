@@ -1,7 +1,7 @@
 package org.apache.flink.connector.jdbc.gaussdb.table.executor;
 
 import org.apache.flink.connector.jdbc.core.database.dialect.JdbcDialect;
-import org.apache.flink.connector.jdbc.core.database.dialect.JdbcDialectConverter;
+import org.apache.flink.connector.jdbc.gaussdb.database.dialect.GaussdbDialectConverter;
 import org.apache.flink.connector.jdbc.gaussdb.table.GaussdbExtendOptions;
 import org.apache.flink.connector.jdbc.gaussdb.table.GaussdbFieldObject;
 import org.apache.flink.connector.jdbc.internal.executor.JdbcBatchStatementExecutor;
@@ -10,7 +10,6 @@ import org.apache.flink.connector.jdbc.statement.FieldNamedPreparedStatement;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.LogicalType;
-import org.apache.flink.table.types.logical.RowType;
 
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -29,7 +28,6 @@ public class GaussdbUpsertStatementExecutor implements JdbcBatchStatementExecuto
     private final String[] keyFields;
     private Connection connection;
     private FieldNamedPreparedStatement updateStatement;
-    private final JdbcDialectConverter updateSetter;
     private final LogicalType[] fieldTypes;
 
     // Buffer for ignoreNullWhenUpdate mode: each entry = [fieldNames, reducedRowData]
@@ -43,7 +41,6 @@ public class GaussdbUpsertStatementExecutor implements JdbcBatchStatementExecuto
         this.keyFields = opt.getKeyFields().orElse(null);
         this.options = ept;
         this.fieldTypes = fieldTypes;
-        this.updateSetter = dialect.getRowConverter(RowType.of(fieldTypes));
         this.bufferedRows = options.isIgnoreNullWhenUpdate() ? new ArrayList<>() : null;
     }
 
@@ -78,8 +75,9 @@ public class GaussdbUpsertStatementExecutor implements JdbcBatchStatementExecuto
                             genericRowData.getRowKind(), indexFieldData.values().toArray());
             bufferedRows.add(new Object[] {newFieldNames, reduced});
         } else {
-            // Reuse the pre-created statement — all rows share the same SQL
-            updateSetter.toExternal(genericRowData, updateStatement);
+            // Set values directly using setObject() — avoids incompatible
+            // JdbcSerializationConverter.serialize() on MRS jdbc-core 3.2.x
+            setRowValues(genericRowData, updateStatement, fieldNames);
             updateStatement.addBatch();
         }
     }
@@ -117,7 +115,7 @@ public class GaussdbUpsertStatementExecutor implements JdbcBatchStatementExecuto
             columnSets.putIfAbsent(key, cols);
         }
 
-        // Execute each group with its own statement and converter
+        // Execute each group with its own statement
         for (Map.Entry<String, List<GenericRowData>> group : groups.entrySet()) {
             String[] cols = columnSets.get(group.getKey());
             List<GenericRowData> rows = group.getValue();
@@ -126,10 +124,8 @@ public class GaussdbUpsertStatementExecutor implements JdbcBatchStatementExecuto
             FieldNamedPreparedStatement stmt =
                     FieldNamedPreparedStatement.prepareStatement(connection, sql, cols);
 
-            JdbcDialectConverter converter = buildConverterForColumns(cols);
-
             for (GenericRowData row : rows) {
-                converter.toExternal(row, stmt);
+                setRowValues(row, stmt, cols);
                 stmt.addBatch();
             }
 
@@ -140,18 +136,25 @@ public class GaussdbUpsertStatementExecutor implements JdbcBatchStatementExecuto
         bufferedRows.clear();
     }
 
-    /** Build a JdbcDialectConverter for a subset of columns by mapping names back to types. */
-    private JdbcDialectConverter buildConverterForColumns(String[] cols) {
-        LogicalType[] subsetTypes = new LogicalType[cols.length];
+    /**
+     * Set RowData fields directly on the FieldNamedPreparedStatement using setObject().
+     * This avoids calling JdbcSerializationConverter.serialize() which has incompatible
+     * method signatures between jdbc-core 3.2.x (MRS: 4-arg) and 3.3.x (3-arg).
+     */
+    private void setRowValues(GenericRowData row, FieldNamedPreparedStatement stmt, String[] cols)
+            throws SQLException {
         for (int i = 0; i < cols.length; i++) {
-            for (int j = 0; j < fieldNames.length; j++) {
-                if (fieldNames[j].equals(cols[i])) {
-                    subsetTypes[i] = fieldTypes[j];
-                    break;
+            if (row.isNullAt(i)) {
+                stmt.setNull(i, java.sql.Types.NULL);
+            } else {
+                Object val = row.getField(i);
+                // Unwrap GaussdbFieldObject if present (used by ignoreNullWhenUpdate path)
+                if (val instanceof GaussdbFieldObject) {
+                    val = ((GaussdbFieldObject) val).getField();
                 }
+                stmt.setObject(i, GaussdbDialectConverter.toJdbcObject(val));
             }
         }
-        return dialect.getRowConverter(RowType.of(subsetTypes));
     }
 
     @Override

@@ -25,6 +25,8 @@ import org.apache.flink.connector.jdbc.statement.FieldNamedPreparedStatement;
 import org.apache.flink.table.data.GenericArrayData;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.types.logical.ArrayType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
@@ -114,18 +116,37 @@ public class GaussdbDialectConverter extends AbstractDialectConverter {
         return "Gaussdb";
     }
 
+    /**
+     * Convert a Flink internal type to its JDBC-compatible Java equivalent.
+     * The GaussDB driver cannot handle Flink types like BinaryStringData, TimestampData, etc.
+     */
+    public static Object toJdbcObject(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof StringData) {
+            return value.toString();
+        }
+        if (value instanceof TimestampData) {
+            return ((TimestampData) value).toTimestamp();
+        }
+        return value;
+    }
+
     @Override
     public FieldNamedPreparedStatement toExternal(
             RowData rowData, FieldNamedPreparedStatement statement) throws SQLException {
-        GenericRowData genericRowData = (GenericRowData) rowData;
         for (int index = 0; index < rowData.getArity(); index++) {
-            Object field = genericRowData.getField(index);
-            int sourceIndex = index;
-            if (field != null && field instanceof GaussdbFieldObject) {
-                sourceIndex = ((GaussdbFieldObject) field).getIndex();
-                genericRowData.setField(index, ((GaussdbFieldObject) field).getField());
+            if (rowData.isNullAt(index)) {
+                statement.setNull(index, java.sql.Types.NULL);
+            } else {
+                Object field = ((GenericRowData) rowData).getField(index);
+                // Unwrap GaussdbFieldObject if present
+                if (field instanceof GaussdbFieldObject) {
+                    field = ((GaussdbFieldObject) field).getField();
+                }
+                statement.setObject(index, toJdbcObject(field));
             }
-            toExternalConverters[sourceIndex].serialize(genericRowData, index, statement);
         }
         return statement;
     }
