@@ -14,21 +14,26 @@ import org.apache.flink.table.types.logical.RowType;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /** Gaussdb upsert statement executor. */
 public class GaussdbUpsertStatementExecutor implements JdbcBatchStatementExecutor<RowData> {
 
-    private JdbcDialect dialect;
-    private GaussdbExtendOptions options;
-    private String tableName;
-    private String[] fieldNames;
-    private String[] keyFields;
+    private final JdbcDialect dialect;
+    private final GaussdbExtendOptions options;
+    private final String tableName;
+    private final String[] fieldNames;
+    private final String[] keyFields;
     private Connection connection;
     private FieldNamedPreparedStatement updateStatement;
-    private JdbcDialectConverter updateSetter;
+    private final JdbcDialectConverter updateSetter;
     private final LogicalType[] fieldTypes;
+
+    // Buffer for ignoreNullWhenUpdate mode: each entry = [fieldNames, reducedRowData]
+    private final List<Object[]> bufferedRows;
 
     public GaussdbUpsertStatementExecutor(
             JdbcDmlOptions opt, GaussdbExtendOptions ept, LogicalType[] fieldTypes) {
@@ -39,50 +44,124 @@ public class GaussdbUpsertStatementExecutor implements JdbcBatchStatementExecuto
         this.options = ept;
         this.fieldTypes = fieldTypes;
         this.updateSetter = dialect.getRowConverter(RowType.of(fieldTypes));
+        this.bufferedRows = options.isIgnoreNullWhenUpdate() ? new ArrayList<>() : null;
     }
 
     @Override
-    public void prepareStatements(Connection connection) {
+    public void prepareStatements(Connection connection) throws SQLException {
         this.connection = connection;
+        if (!options.isIgnoreNullWhenUpdate()) {
+            // All rows share the same SQL — create statement once for reuse
+            String sql = dialect.getUpsertStatement(tableName, fieldNames, keyFields).get();
+            this.updateStatement =
+                    FieldNamedPreparedStatement.prepareStatement(connection, sql, fieldNames);
+        }
     }
 
     @Override
     public void addToBatch(RowData rowData) throws SQLException {
         GenericRowData genericRowData = toGenericRowData(rowData);
-        String[] newFieldNames;
+
         if (options.isIgnoreNullWhenUpdate()) {
+            // Determine non-null column set for this row
             Map<String, GaussdbFieldObject> indexFieldData = new LinkedHashMap<>();
             for (int i = 0; i < genericRowData.getArity(); i++) {
                 if (!genericRowData.isNullAt(i)) {
                     indexFieldData.put(
-                            fieldNames[i], new GaussdbFieldObject(i, genericRowData.getField(i)));
+                            fieldNames[i],
+                            new GaussdbFieldObject(i, genericRowData.getField(i)));
                 }
             }
-            newFieldNames = indexFieldData.keySet().toArray(new String[0]);
-            genericRowData =
+            String[] newFieldNames = indexFieldData.keySet().toArray(new String[0]);
+            GenericRowData reduced =
                     GenericRowData.ofKind(
                             genericRowData.getRowKind(), indexFieldData.values().toArray());
+            bufferedRows.add(new Object[] {newFieldNames, reduced});
         } else {
-            newFieldNames = fieldNames;
+            // Reuse the pre-created statement — all rows share the same SQL
+            updateSetter.toExternal(genericRowData, updateStatement);
+            updateStatement.addBatch();
         }
-        String sql = dialect.getUpsertStatement(tableName, newFieldNames, keyFields).get();
-        updateStatement =
-                FieldNamedPreparedStatement.prepareStatement(connection, sql, newFieldNames);
-        updateSetter.toExternal(genericRowData, updateStatement);
-        updateStatement.addBatch();
     }
 
     @Override
     public void executeBatch() throws SQLException {
-        if (updateStatement != null) {
-            updateStatement.executeBatch();
+        if (options.isIgnoreNullWhenUpdate()) {
+            executeBuffered();
+        } else {
+            if (updateStatement != null) {
+                updateStatement.executeBatch();
+            }
         }
+    }
+
+    /**
+     * Group buffered rows by column set, then execute each group with its own PreparedStatement.
+     * Different rows may have different non-null column sets when ignoreNullWhenUpdate is true,
+     * producing different UPSERT SQL — each group gets its own batch.
+     */
+    private void executeBuffered() throws SQLException {
+        if (bufferedRows.isEmpty()) {
+            return;
+        }
+
+        // Group rows by column set (keyed by comma-joined field names)
+        Map<String, List<GenericRowData>> groups = new LinkedHashMap<>();
+        Map<String, String[]> columnSets = new LinkedHashMap<>();
+
+        for (Object[] entry : bufferedRows) {
+            String[] cols = (String[]) entry[0];
+            GenericRowData row = (GenericRowData) entry[1];
+            String key = String.join(",", cols);
+            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
+            columnSets.putIfAbsent(key, cols);
+        }
+
+        // Execute each group with its own statement and converter
+        for (Map.Entry<String, List<GenericRowData>> group : groups.entrySet()) {
+            String[] cols = columnSets.get(group.getKey());
+            List<GenericRowData> rows = group.getValue();
+
+            String sql = dialect.getUpsertStatement(tableName, cols, keyFields).get();
+            FieldNamedPreparedStatement stmt =
+                    FieldNamedPreparedStatement.prepareStatement(connection, sql, cols);
+
+            JdbcDialectConverter converter = buildConverterForColumns(cols);
+
+            for (GenericRowData row : rows) {
+                converter.toExternal(row, stmt);
+                stmt.addBatch();
+            }
+
+            stmt.executeBatch();
+            stmt.close();
+        }
+
+        bufferedRows.clear();
+    }
+
+    /** Build a JdbcDialectConverter for a subset of columns by mapping names back to types. */
+    private JdbcDialectConverter buildConverterForColumns(String[] cols) {
+        LogicalType[] subsetTypes = new LogicalType[cols.length];
+        for (int i = 0; i < cols.length; i++) {
+            for (int j = 0; j < fieldNames.length; j++) {
+                if (fieldNames[j].equals(cols[i])) {
+                    subsetTypes[i] = fieldTypes[j];
+                    break;
+                }
+            }
+        }
+        return dialect.getRowConverter(RowType.of(subsetTypes));
     }
 
     @Override
     public void closeStatements() throws SQLException {
         if (updateStatement != null) {
             updateStatement.close();
+            updateStatement = null;
+        }
+        if (bufferedRows != null) {
+            bufferedRows.clear();
         }
     }
 
