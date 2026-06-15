@@ -37,11 +37,22 @@ Connector JAR **默认不包含** GaussDB JDBC 驱动（驱动为 `provided` sco
 
 如需打出内置驱动的 fat JAR，参见 [瘦包与胖包切换](#瘦包与胖包切换)。
 
+## 版本选择
+
+本模块提供两个版本，**务必根据运行环境选择正确的 JAR**：
+
+| 版本 | 适用环境 | 说明 |
+|------|---------|------|
+| **v3.3.2-1.20-normal** | 标准 Apache Flink 1.20+ | 使用 Flink 标准 JDBC Connector 框架，兼容所有标准 Flink 发行版 |
+| **v3.3.2-1.20-mrs** | 华为 MRS (MapReduce Service) | MRS 定制版，使用 `setObject()` 替代 `serialize()` 以兼容 MRS jdbc-core 3.2.x API，含自定义 `GaussdbUpsertStatementExecutor` |
+
+> **⚠️ 混用风险**：MRS 版本注册了自定义 `DynamicTableSinkFactory`，在标准 Flink 上可能与自带的 JDBC Factory 冲突，导致非 GaussDB 的 JDBC 表也走 GaussDB 路径。**标准 Flink 用户请使用 normal 版本。**
+
 ## 版本兼容性
 
 | 连接器版本 | Flink 版本 | GaussDB 版本 | CDC 配套 |
 |-----------|-----------|-------------|---------|
-| flink-connector-jdbc-gaussdb-3.3.0-1.20 | 2.x / 3.x | 505.2.1.SPC0800+ | CDC 2.4.x / CDC 3.6.x |
+| flink-connector-jdbc-gaussdb-3.3.2-1.20 | 2.x / 3.x | 505.2.1.SPC0800+ | CDC 2.4.x / CDC 3.6.x |
 
 ## 前置条件
 
@@ -53,7 +64,7 @@ Connector JAR **默认不包含** GaussDB JDBC 驱动（驱动为 `provided` sco
    - `flink-connector-jdbc-3.1.2-1.17.jar`（Flink 1.17）或对应的 Flink 2.x 版本
 
 2. **GaussDB JDBC Connector**（必选）
-   - `flink-connector-jdbc-gaussdb-3.3.0-1.20.jar`
+   - `flink-connector-jdbc-gaussdb-3.3.2-1.20.jar`
 
 3. **GaussDB JDBC 驱动**（必选，Connector 默认不包含）
    - `gaussdbjdbc-506.0.0.b058.jar` 或 `gaussdbjdbc-506.0.0.b058-jdk7.jar`
@@ -65,7 +76,7 @@ Connector JAR **默认不包含** GaussDB JDBC 驱动（驱动为 `provided` sco
 ### 1. 部署 JAR
 
 ```bash
-cp flink-connector-jdbc-gaussdb-3.3.0-1.20.jar $FLINK_HOME/lib/
+cp flink-connector-jdbc-gaussdb-3.3.2-1.20.jar $FLINK_HOME/lib/
 ```
 
 重启 Flink：

@@ -74,7 +74,9 @@
 
 从 [GitHub Releases](https://github.com/jarrenL/gaussdb-flink-connector-jdbc/releases) 下载对应模块的 Fat JAR（内置驱动）或 Thin JAR（不含驱动）。
 
-> 版本：**3.3.0-1.20** | GaussDB JDBC 驱动：`gaussdbjdbc-506.0.0.b058-jdk7`（兼容 JDK 8/11）
+> 版本：**3.3.2-1.20** | GaussDB JDBC 驱动：`gaussdbjdbc-506.0.0.b058-jdk7`（兼容 JDK 8/11）
+>
+> **⚠️ 请根据运行环境选择版本**：标准 Flink 用 `-normal`，华为 MRS 用 `-mrs`。详见 [flink-connector-jdbc-gaussdb README](./flink-connector-jdbc-gaussdb/README.md#版本选择)。
 
 | 模块 | Fat JAR（含驱动） | Thin JAR（不含驱动） |
 |------|-----------------|-------------------|
