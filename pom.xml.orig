@@ -411,10 +411,10 @@ under the License.
                 <version>3.1.1</version>
             </plugin>
 
-            <!--plugin>
+            <plugin>
                 <groupId>org.commonjava.maven.plugins</groupId>
                 <artifactId>directory-maven-plugin</artifactId>
-            </plugin-->
+            </plugin>
 
             <!-- Jacoco Code Coverage Plugin -->
             <plugin>
