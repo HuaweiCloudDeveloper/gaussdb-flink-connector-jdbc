@@ -397,10 +397,10 @@ under the License.
                 <artifactId>maven-shade-plugin</artifactId>
             </plugin>
 
-            <plugin>
+            <!--plugin>
                 <groupId>org.commonjava.maven.plugins</groupId>
                 <artifactId>directory-maven-plugin</artifactId>
-            </plugin>
+            </plugin-->
         </plugins>
 
         <pluginManagement>
