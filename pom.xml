@@ -337,6 +337,20 @@ under the License.
         </dependencies>
     </dependencyManagement>
 
+    <repositories>
+        <repository>
+            <id>huaweicloud</id>
+            <name>华为云Maven仓库</name>
+            <url>https://repo.huaweicloud.com/repository/maven/</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
     <build>
         <plugins>
 
