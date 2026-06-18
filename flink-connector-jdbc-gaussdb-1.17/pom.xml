@@ -20,6 +20,17 @@
         <scala.binary.version>2.12</scala.binary.version>
     </properties>
 
+    <!-- 所有依赖从华为云仓库拉取 -->
+    <repositories>
+        <repository>
+            <id>huaweicloud</id>
+            <name>华为云Maven仓库</name>
+            <url>https://repo.huaweicloud.com/repository/maven/</url>
+            <releases><enabled>true</enabled></releases>
+            <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+    </repositories>
+
     <dependencies>
 
         <dependency>
