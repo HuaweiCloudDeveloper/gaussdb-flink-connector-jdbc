@@ -50,6 +50,21 @@ public class GaussdbDialect extends AbstractDialect {
 
     @Override
     public Optional<String> defaultDriverName() {
+        // Auto-detect which GaussDB JDBC driver is on the classpath.
+        // gaussdbjdbc.jar registers com.huawei.gaussdb.jdbc.Driver (jdbc:gaussdb://)
+        // gsjdbc4.jar registers org.postgresql.Driver (jdbc:postgresql://)
+        try {
+            Class.forName("com.huawei.gaussdb.jdbc.Driver");
+            return Optional.of("com.huawei.gaussdb.jdbc.Driver");
+        } catch (ClassNotFoundException e) {
+            // fall through
+        }
+        try {
+            Class.forName("org.postgresql.Driver");
+            return Optional.of("org.postgresql.Driver");
+        } catch (ClassNotFoundException e) {
+            // fall through to default
+        }
         return Optional.of("com.huawei.gaussdb.jdbc.Driver");
     }
 

@@ -23,17 +23,20 @@ import org.apache.flink.connector.jdbc.dialect.JdbcDialect;
 import org.apache.flink.connector.jdbc.dialect.JdbcDialectFactory;
 
 /**
- * Factory for {@link GaussdbDialect}.
+ * Factory for GaussdbDialect.
  *
- * <p>GaussDB uses ON DUPLICATE KEY UPDATE for upsert across all compatibility modes (PG, A, B, M),
- * as it does not support PostgreSQL's ON CONFLICT syntax.
+ * <p>Supports two URL schemes depending on which GaussDB JDBC driver is deployed:
+ * <ul>
+ *   <li>jdbc:gaussdb:// - used by gaussdbjdbc.jar (com.huawei.gaussdb.jdbc.Driver)
+ *   <li>jdbc:postgresql:// - used by gsjdbc4.jar (org.postgresql.Driver)
+ * </ul>
  */
 @Internal
 public class GaussdbDialectFactory implements JdbcDialectFactory {
 
     @Override
     public boolean acceptsURL(String url) {
-        return url.startsWith("jdbc:gaussdb:");
+        return url.startsWith("jdbc:gaussdb:") || url.startsWith("jdbc:postgresql:");
     }
 
     @Override
