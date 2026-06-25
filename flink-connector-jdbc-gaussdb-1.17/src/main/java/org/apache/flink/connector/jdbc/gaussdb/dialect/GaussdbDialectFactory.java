@@ -36,7 +36,31 @@ public class GaussdbDialectFactory implements JdbcDialectFactory {
 
     @Override
     public boolean acceptsURL(String url) {
-        return url.startsWith("jdbc:gaussdb:") || url.startsWith("jdbc:postgresql:");
+        // Always accept jdbc:gaussdb: (gaussdbjdbc.jar driver)
+        if (url.startsWith("jdbc:gaussdb:")) {
+            return true;
+        }
+        // Only accept jdbc:postgresql: when a GaussDB driver is actually on the
+        // classpath. This avoids conflicts with the upstream PostgresDialectFactory
+        // when the user is connecting to a real PostgreSQL database.
+        if (url.startsWith("jdbc:postgresql:")) {
+            try {
+                Class.forName("com.huawei.gaussdb.jdbc.Driver");
+                return true;
+            } catch (ClassNotFoundException e) {
+                // gaussdbjdbc not found — try gsjdbc4 (org.postgresql.Driver)
+                // gsjdbc4 is a GaussDB fork of pgjdbc, distinguish it from
+                // upstream postgresql.jar by checking for GaussDB-specific class
+                try {
+                    Class.forName("com.huawei.gaussdb.jdbc.util.PSQLException");
+                    return true;
+                } catch (ClassNotFoundException e2) {
+                    // No GaussDB driver present — let upstream PostgresDialectFactory handle it
+                    return false;
+                }
+            }
+        }
+        return false;
     }
 
     @Override
