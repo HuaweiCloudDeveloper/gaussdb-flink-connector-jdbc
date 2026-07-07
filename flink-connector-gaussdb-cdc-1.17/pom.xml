@@ -10,13 +10,11 @@
         <version>3.3.0-1.20</version>
     </parent>
 
-    <artifactId>flink-connector-gaussdb-cdc-2.4.x</artifactId>
-    <name>Flink : Connectors : GaussDB CDC : 1.13+</name>
+    <artifactId>flink-connector-gaussdb-cdc-1.17</artifactId>
+    <name>Flink : Connectors : GaussDB CDC : 1.17</name>
     <packaging>jar</packaging>
 
     <properties>
-        <!-- Compile against Flink 1.17.2, but only use SourceFunction API (stable since 1.0)
-             so the JAR is compatible with Flink 1.13~1.17 -->
         <flink.version>1.17.2</flink.version>
         <gaussdb.jdbc.version>506.0.0.b058-jdk7</gaussdb.jdbc.version>
         <maven.compiler.source>1.8</maven.compiler.source>
@@ -25,10 +23,17 @@
     </properties>
 
     <dependencies>
-        <!-- Flink Core (provided - not packaged into JAR) -->
+        <!-- Flink Core -->
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-streaming-java</artifactId>
+            <version>${flink.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-connector-base</artifactId>
             <version>${flink.version}</version>
             <scope>provided</scope>
         </dependency>
@@ -46,6 +51,8 @@
             <artifactId>gaussdbjdbc</artifactId>
             <version>${gaussdb.jdbc.version}</version>
         </dependency>
+
+
 
         <!-- Logging -->
         <dependency>
@@ -67,13 +74,6 @@
             <groupId>junit</groupId>
             <artifactId>junit</artifactId>
             <version>4.13.2</version>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.mockito</groupId>
-            <artifactId>mockito-core</artifactId>
-            <version>3.12.4</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -107,22 +107,13 @@
                 <artifactId>maven-shade-plugin</artifactId>
                 <version>3.4.1</version>
                 <executions>
-                    <!-- Fat JAR: 包含 GaussDB JDBC 驱动 -->
                     <execution>
-                        <id>shade-fat</id>
                         <phase>package</phase>
                         <goals>
                             <goal>shade</goal>
                         </goals>
                         <configuration>
-                            <shadedArtifactAttached>true</shadedArtifactAttached>
-                            <shadedClassifierName>fat</shadedClassifierName>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
-                            <artifactSet>
-                                <includes>
-                                    <include>com.huaweicloud.gaussdb:gaussdbjdbc</include>
-                                </includes>
-                            </artifactSet>
                             <filters>
                                 <filter>
                                     <artifact>*:*</artifact>
