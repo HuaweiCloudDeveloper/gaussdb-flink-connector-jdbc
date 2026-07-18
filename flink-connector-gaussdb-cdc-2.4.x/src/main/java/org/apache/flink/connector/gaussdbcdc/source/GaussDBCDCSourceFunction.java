@@ -1044,35 +1044,82 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
      * Convert a WalChange to a single-column RowData containing a JSON string. Used in
      * output.format=json mode for heterogeneous multi-table capture.
      *
-     * <p>JSON format:
+     * <p>JSON format (aligned with Haier CDC extraction structure):
      *
      * <pre>
-     * {"table":"orders","schema":"public","op":"INSERT","lsn":"0/12345678",
-     *  "before":{},"after":{"id":1,"name":"Alice","amount":100.50}}
+     * {
+     *   "database": "event_driven",
+     *   "table": "haier_cbs_order_oper",
+     *   "optType": "INSERT",
+     *   "pkNames": ["id"],
+     *   "pkValues": "722253",
+     *   "es": 1783489586878,
+     *   "ts": 1783489587143,
+     *   "data": {"id": "722253", "name": "Alice", ...},
+     *   "old": null
+     * }
      * </pre>
      *
      * @param change the WAL change event
      * @return RowData with a single StringData field containing the JSON string
      */
     private RowData convertWalChangeToJson(WalChange change) {
-        StringBuilder sb = new StringBuilder(256);
+        StringBuilder sb = new StringBuilder(512);
         sb.append('{');
+        // database
+        sb.append("\"database\":\"").append(escapeJson(database)).append('"');
         // table
-        sb.append("\"table\":\"").append(escapeJson(change.getTable())).append('"');
-        // schema
-        sb.append(",\"schema\":\"").append(escapeJson(change.getSchema())).append('"');
-        // op
-        sb.append(",\"op\":\"").append(change.getType().name()).append('"');
-        // lsn
+        sb.append(",\"table\":\"").append(escapeJson(change.getTable())).append('"');
+        // optType
+        String optType = change.getType().name();
+        sb.append(",\"optType\":\"").append(optType).append('"');
+        // pkNames + pkValues
+        String tbl = change.getTable();
+        String pkCol = null;
+        if (cachedPkByTable != null) {
+            pkCol = cachedPkByTable.get(tbl);
+        }
+        if (pkCol != null) {
+            sb.append(",\"pkNames\":[\"").append(escapeJson(pkCol)).append("\"]");
+            // Find PK value from the change columns
+            String pkVal = extractPkValue(change, pkCol);
+            if (pkVal != null) {
+                sb.append(",\"pkValues\":\"").append(escapeJson(pkVal)).append('"');
+            } else {
+                sb.append(",\"pkValues\":null");
+            }
+        } else {
+            sb.append(",\"pkNames\":[]");
+            sb.append(",\"pkValues\":null");
+        }
+        // es (event source timestamp = change LSN-based or system time)
+        long now = System.currentTimeMillis();
+        sb.append(",\"es\":").append(now);
+        // ts (processing timestamp)
+        sb.append(",\"ts\":").append(now);
+        // data (after columns for INSERT/UPDATE, null for DELETE)
+        if (change.getType() == WalChange.ChangeType.DELETE) {
+            sb.append(",\"data\":null");
+        } else {
+            sb.append(",\"data\":");
+            appendColumnsAsJson(sb, change.getAfterColumns());
+        }
+        // old (before columns for UPDATE/DELETE, null for INSERT)
+        if (change.getType() == WalChange.ChangeType.INSERT) {
+            sb.append(",\"old\":null");
+        } else {
+            List<WalChange.ColumnValue> before = change.getBeforeColumns();
+            if (before == null || before.isEmpty()) {
+                sb.append(",\"old\":null");
+            } else {
+                sb.append(",\"old\":");
+                appendColumnsAsJson(sb, before);
+            }
+        }
+        // lsn (for diagnostics, not in Haier format but useful)
         if (change.getLsn() != null) {
             sb.append(",\"lsn\":\"").append(escapeJson(change.getLsn())).append('"');
         }
-        // before (DELETE/UPDATE)
-        sb.append(",\"before\":");
-        appendColumnsAsJson(sb, change.getBeforeColumns());
-        // after (INSERT/UPDATE)
-        sb.append(",\"after\":");
-        appendColumnsAsJson(sb, change.getAfterColumns());
         sb.append('}');
 
         GenericRowData row = new GenericRowData(1);
@@ -1081,6 +1128,24 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             row.setRowKind(RowKind.DELETE);
         }
         return row;
+    }
+
+    /** Extract the primary key value from a WalChange. */
+    private String extractPkValue(WalChange change, String pkCol) {
+        // For INSERT/UPDATE, look in after columns
+        List<WalChange.ColumnValue> cols = change.getAfterColumns();
+        if (change.getType() == WalChange.ChangeType.DELETE) {
+            cols = change.getBeforeColumns();
+        }
+        if (cols == null) {
+            return null;
+        }
+        for (WalChange.ColumnValue col : cols) {
+            if (pkCol.equalsIgnoreCase(col.getColumnName()) && !col.isNull()) {
+                return col.getValue();
+            }
+        }
+        return null;
     }
 
     /** Append a list of column values as a JSON object. */
@@ -1149,13 +1214,38 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private RowData convertSnapshotRow(ResultSet rs, ResultSetMetaData meta, String tbl)
             throws SQLException {
         if ("json".equalsIgnoreCase(outputFormat)) {
-            StringBuilder sb = new StringBuilder(256);
-            sb.append("{\"table\":\"").append(escapeJson(tbl)).append('"');
-            sb.append(",\"schema\":\"").append(escapeJson(schema)).append('"');
-            sb.append(",\"op\":\"INSERT\"");
-            sb.append(",\"before\":{}");
-            sb.append(",\"after\":");
-            // Append all columns as JSON
+            String pkCol = null;
+            if (cachedPkByTable != null) {
+                pkCol = cachedPkByTable.get(tbl);
+            }
+            long now = System.currentTimeMillis();
+            StringBuilder sb = new StringBuilder(512);
+            sb.append('{');
+            sb.append("\"database\":\"").append(escapeJson(database)).append('"');
+            sb.append(",\"table\":\"").append(escapeJson(tbl)).append('"');
+            sb.append(",\"optType\":\"INSERT\"");
+            // pkNames + pkValues
+            if (pkCol != null) {
+                sb.append(",\"pkNames\":[\"").append(escapeJson(pkCol)).append("\"]");
+                String pkVal = null;
+                try {
+                    pkVal = rs.getString(pkCol);
+                } catch (SQLException e) {
+                    // PK column not in result set
+                }
+                if (pkVal != null && !rs.wasNull()) {
+                    sb.append(",\"pkValues\":\"").append(escapeJson(pkVal)).append('"');
+                } else {
+                    sb.append(",\"pkValues\":null");
+                }
+            } else {
+                sb.append(",\"pkNames\":[]");
+                sb.append(",\"pkValues\":null");
+            }
+            sb.append(",\"es\":").append(now);
+            sb.append(",\"ts\":").append(now);
+            // data = all columns
+            sb.append(",\"data\":");
             sb.append('{');
             for (int i = 1; i <= meta.getColumnCount(); i++) {
                 if (i > 1) {
@@ -1171,6 +1261,8 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                 }
             }
             sb.append('}');
+            // old = null for snapshot (INSERT)
+            sb.append(",\"old\":null");
             sb.append('}');
             GenericRowData row = new GenericRowData(1);
             row.setField(0, StringData.fromString(sb.toString()));
