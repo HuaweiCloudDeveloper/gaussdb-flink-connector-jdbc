@@ -71,6 +71,7 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
         options.add(GaussDBCDCOptions.SENDING_BATCH);
         options.add(GaussDBCDCOptions.SSL_MODE);
         options.add(GaussDBCDCOptions.OUTPUT_FORMAT);
+        options.add(GaussDBCDCOptions.OUTPUT_JSON_FORMAT);
         return options;
     }
 
@@ -100,6 +101,7 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
         boolean sendingBatch = config.get(GaussDBCDCOptions.SENDING_BATCH);
         String sslMode = config.get(GaussDBCDCOptions.SSL_MODE);
         String outputFormat = config.get(GaussDBCDCOptions.OUTPUT_FORMAT);
+        String outputJsonFormat = config.get(GaussDBCDCOptions.OUTPUT_JSON_FORMAT);
 
         // Use getCatalogTable().getResolvedSchema().toPhysicalRowDataType() instead of
         // context.getPhysicalRowDataType() for Flink 1.13~1.14 compatibility.
@@ -126,6 +128,7 @@ public class GaussDBCDCTableSourceFactory implements DynamicTableSourceFactory {
                 sslMode,
                 replicationPort,
                 outputFormat,
+                outputJsonFormat,
                 physicalRowDataType);
     }
 }

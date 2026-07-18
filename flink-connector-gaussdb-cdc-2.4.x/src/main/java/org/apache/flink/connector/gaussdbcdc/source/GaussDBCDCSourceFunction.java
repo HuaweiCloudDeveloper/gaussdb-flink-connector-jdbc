@@ -134,6 +134,8 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private final Integer replicationPort;
     /** Output format: "raw" (RowData, default) or "json" (single STRING column with JSON). */
     private final String outputFormat;
+    /** JSON sub-format when output.format=json: "debezium" (default), "canal", or "haier". */
+    private final String outputJsonFormat;
 
     /** Compiled regex pattern for table-name matching. Null means exact match on tableName. */
     private transient Pattern tablePattern;
@@ -180,6 +182,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         this.sslMode = builder.sslMode;
         this.replicationPort = builder.replicationPort;
         this.outputFormat = builder.outputFormat;
+        this.outputJsonFormat = builder.outputJsonFormat;
     }
 
     @Override
@@ -1064,15 +1067,132 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
      * @return RowData with a single StringData field containing the JSON string
      */
     private RowData convertWalChangeToJson(WalChange change) {
+        String json;
+        if ("canal".equalsIgnoreCase(outputJsonFormat)) {
+            json = buildCanalJson(change);
+        } else if ("haier".equalsIgnoreCase(outputJsonFormat)) {
+            json = buildHaierJson(change);
+        } else {
+            json = buildDebeziumJson(change);
+        }
+        GenericRowData row = new GenericRowData(1);
+        row.setField(0, StringData.fromString(json));
+        if (change.getType() == WalChange.ChangeType.DELETE) {
+            row.setRowKind(RowKind.DELETE);
+        }
+        return row;
+    }
+
+    /** Build Debezium standard JSON format. */
+    private String buildDebeziumJson(WalChange change) {
+        StringBuilder sb = new StringBuilder(512);
+        sb.append('{');
+        // before
+        sb.append("\"before\":");
+        appendColumnsAsJson(sb, change.getBeforeColumns());
+        // after
+        sb.append(",\"after\":");
+        appendColumnsAsJson(sb, change.getAfterColumns());
+        // source
+        sb.append(",\"source\":{");
+        sb.append("\"connector\":\"gaussdb\"");
+        sb.append(",\"db\":\"").append(escapeJson(database)).append('"');
+        sb.append(",\"schema\":\"").append(escapeJson(change.getSchema())).append('"');
+        sb.append(",\"table\":\"").append(escapeJson(change.getTable())).append('"');
+        if (change.getLsn() != null) {
+            sb.append(",\"lsn\":\"").append(escapeJson(change.getLsn())).append('"');
+        }
+        long now = System.currentTimeMillis();
+        sb.append(",\"ts_ms\":").append(now);
+        sb.append(",\"snapshot\":false");
+        sb.append('}');
+        // op
+        String op;
+        switch (change.getType()) {
+            case INSERT:
+                op = "c";
+                break;
+            case UPDATE:
+                op = "u";
+                break;
+            case DELETE:
+                op = "d";
+                break;
+            default:
+                op = "u";
+        }
+        sb.append(",\"op\":\"").append(op).append('"');
+        // ts_ms
+        sb.append(",\"ts_ms\":").append(now);
+        sb.append(",\"transaction\":null");
+        sb.append('}');
+        return sb.toString();
+    }
+
+    /** Build Canal standard JSON format. */
+    private String buildCanalJson(WalChange change) {
+        StringBuilder sb = new StringBuilder(512);
+        sb.append('{');
+        // data (after columns for INSERT/UPDATE, null for DELETE)
+        if (change.getType() == WalChange.ChangeType.DELETE) {
+            sb.append("\"data\":null");
+        } else {
+            sb.append("\"data\":");
+            appendColumnsAsJson(sb, change.getAfterColumns());
+        }
+        // old (before columns for UPDATE/DELETE, null for INSERT)
+        if (change.getType() == WalChange.ChangeType.INSERT) {
+            sb.append(",\"old\":null");
+        } else {
+            List<WalChange.ColumnValue> before = change.getBeforeColumns();
+            if (before == null || before.isEmpty()) {
+                sb.append(",\"old\":null");
+            } else {
+                sb.append(",\"old\":");
+                appendColumnsAsJson(sb, before);
+            }
+        }
+        // database
+        sb.append(",\"database\":\"").append(escapeJson(database)).append('"');
+        // table
+        sb.append(",\"table\":\"").append(escapeJson(change.getTable())).append('"');
+        // type
+        sb.append(",\"type\":\"").append(change.getType().name()).append('"');
+        // pkNames
+        String pkCol = null;
+        if (cachedPkByTable != null) {
+            pkCol = cachedPkByTable.get(change.getTable());
+        }
+        if (pkCol != null) {
+            sb.append(",\"pkNames\":[\"").append(escapeJson(pkCol)).append("\"]");
+        } else {
+            sb.append(",\"pkNames\":[]");
+        }
+        // es
+        long now = System.currentTimeMillis();
+        sb.append(",\"es\":").append(now);
+        // ts
+        sb.append(",\"ts\":").append(now);
+        // isDdl
+        sb.append(",\"isDdl\":false");
+        // sqlType (empty for now)
+        sb.append(",\"sqlType\":{}");
+        // mysqlType (empty for now)
+        sb.append(",\"mysqlType\":{}");
+        sb.append('}');
+        return sb.toString();
+    }
+
+    /** Build Haier customized Canal JSON format. */
+    private String buildHaierJson(WalChange change) {
         StringBuilder sb = new StringBuilder(512);
         sb.append('{');
         // database
         sb.append("\"database\":\"").append(escapeJson(database)).append('"');
         // table
         sb.append(",\"table\":\"").append(escapeJson(change.getTable())).append('"');
-        // optType
-        String optType = change.getType().name();
-        sb.append(",\"optType\":\"").append(optType).append('"');
+        // optType (haier uses optType instead of type)
+        sb.append(",\"optType\":\"").append(change.getType().name()).append('"');
         // pkNames + pkValues
         String tbl = change.getTable();
         String pkCol = null;
@@ -1081,7 +1201,6 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         }
         if (pkCol != null) {
             sb.append(",\"pkNames\":[\"").append(escapeJson(pkCol)).append("\"]");
-            // Find PK value from the change columns
             String pkVal = extractPkValue(change, pkCol);
             if (pkVal != null) {
                 sb.append(",\"pkValues\":\"").append(escapeJson(pkVal)).append('"');
@@ -1092,10 +1211,10 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             sb.append(",\"pkNames\":[]");
             sb.append(",\"pkValues\":null");
         }
-        // es (event source timestamp = change LSN-based or system time)
+        // es
         long now = System.currentTimeMillis();
         sb.append(",\"es\":").append(now);
-        // ts (processing timestamp)
+        // ts
         sb.append(",\"ts\":").append(now);
         // data (after columns for INSERT/UPDATE, null for DELETE)
         if (change.getType() == WalChange.ChangeType.DELETE) {
@@ -1116,18 +1235,12 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                 appendColumnsAsJson(sb, before);
             }
         }
-        // lsn (for diagnostics, not in Haier format but useful)
+        // lsn (diagnostic)
         if (change.getLsn() != null) {
             sb.append(",\"lsn\":\"").append(escapeJson(change.getLsn())).append('"');
         }
         sb.append('}');
-
-        GenericRowData row = new GenericRowData(1);
-        row.setField(0, StringData.fromString(sb.toString()));
-        if (change.getType() == WalChange.ChangeType.DELETE) {
-            row.setRowKind(RowKind.DELETE);
-        }
-        return row;
+        return sb.toString();
     }
 
     /** Extract the primary key value from a WalChange. */
@@ -1214,62 +1327,134 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private RowData convertSnapshotRow(ResultSet rs, ResultSetMetaData meta, String tbl)
             throws SQLException {
         if ("json".equalsIgnoreCase(outputFormat)) {
-            String pkCol = null;
-            if (cachedPkByTable != null) {
-                pkCol = cachedPkByTable.get(tbl);
-            }
-            long now = System.currentTimeMillis();
-            StringBuilder sb = new StringBuilder(512);
-            sb.append('{');
-            sb.append("\"database\":\"").append(escapeJson(database)).append('"');
-            sb.append(",\"table\":\"").append(escapeJson(tbl)).append('"');
-            sb.append(",\"optType\":\"INSERT\"");
-            // pkNames + pkValues
-            if (pkCol != null) {
-                sb.append(",\"pkNames\":[\"").append(escapeJson(pkCol)).append("\"]");
-                String pkVal = null;
-                try {
-                    pkVal = rs.getString(pkCol);
-                } catch (SQLException e) {
-                    // PK column not in result set
-                }
-                if (pkVal != null && !rs.wasNull()) {
-                    sb.append(",\"pkValues\":\"").append(escapeJson(pkVal)).append('"');
-                } else {
-                    sb.append(",\"pkValues\":null");
-                }
+            String json;
+            if ("canal".equalsIgnoreCase(outputJsonFormat)) {
+                json = buildCanalSnapshotJson(rs, meta, tbl);
+            } else if ("haier".equalsIgnoreCase(outputJsonFormat)) {
+                json = buildHaierSnapshotJson(rs, meta, tbl);
             } else {
-                sb.append(",\"pkNames\":[]");
-                sb.append(",\"pkValues\":null");
+                json = buildDebeziumSnapshotJson(rs, meta, tbl);
             }
-            sb.append(",\"es\":").append(now);
-            sb.append(",\"ts\":").append(now);
-            // data = all columns
-            sb.append(",\"data\":");
-            sb.append('{');
-            for (int i = 1; i <= meta.getColumnCount(); i++) {
-                if (i > 1) {
-                    sb.append(',');
-                }
-                String colName = meta.getColumnName(i);
-                sb.append('"').append(escapeJson(colName)).append("\":");
-                String val = rs.getString(i);
-                if (rs.wasNull()) {
-                    sb.append("null");
-                } else {
-                    sb.append('"').append(escapeJson(val)).append('"');
-                }
-            }
-            sb.append('}');
-            // old = null for snapshot (INSERT)
-            sb.append(",\"old\":null");
-            sb.append('}');
             GenericRowData row = new GenericRowData(1);
-            row.setField(0, StringData.fromString(sb.toString()));
+            row.setField(0, StringData.fromString(json));
             return row;
         } else {
             return convertToRowDataDynamic(rs, meta);
         }
+    }
+
+    /** Build Debezium JSON for snapshot row (op="c" for create/read). */
+    private String buildDebeziumSnapshotJson(ResultSet rs, ResultSetMetaData meta, String tbl)
+            throws SQLException {
+        StringBuilder sb = new StringBuilder(512);
+        sb.append('{');
+        sb.append("\"before\":null");
+        sb.append(",\"after\":");
+        appendResultSetAsJson(sb, rs, meta);
+        sb.append(",\"source\":{");
+        sb.append("\"connector\":\"gaussdb\"");
+        sb.append(",\"db\":\"").append(escapeJson(database)).append('"');
+        sb.append(",\"schema\":\"").append(escapeJson(schema)).append('"');
+        sb.append(",\"table\":\"").append(escapeJson(tbl)).append('"');
+        long now = System.currentTimeMillis();
+        sb.append(",\"ts_ms\":").append(now);
+        sb.append(",\"snapshot\":true");
+        sb.append('}');
+        sb.append(",\"op\":\"c\"");
+        sb.append(",\"ts_ms\":").append(now);
+        sb.append(",\"transaction\":null");
+        sb.append('}');
+        return sb.toString();
+    }
+
+    /** Build Canal JSON for snapshot row (type=INSERT). */
+    private String buildCanalSnapshotJson(ResultSet rs, ResultSetMetaData meta, String tbl)
+            throws SQLException {
+        StringBuilder sb = new StringBuilder(512);
+        sb.append('{');
+        sb.append("\"data\":");
+        appendResultSetAsJson(sb, rs, meta);
+        sb.append(",\"old\":null");
+        sb.append(",\"database\":\"").append(escapeJson(database)).append('"');
+        sb.append(",\"table\":\"").append(escapeJson(tbl)).append('"');
+        sb.append(",\"type\":\"INSERT\"");
+        // pkNames
+        String pkCol = null;
+        if (cachedPkByTable != null) {
+            pkCol = cachedPkByTable.get(tbl);
+        }
+        if (pkCol != null) {
+            sb.append(",\"pkNames\":[\"").append(escapeJson(pkCol)).append("\"]");
+        } else {
+            sb.append(",\"pkNames\":[]");
+        }
+        long now = System.currentTimeMillis();
+        sb.append(",\"es\":").append(now);
+        sb.append(",\"ts\":").append(now);
+        sb.append(",\"isDdl\":false");
+        sb.append(",\"sqlType\":{}");
+        sb.append(",\"mysqlType\":{}");
+        sb.append('}');
+        return sb.toString();
+    }
+
+    /** Build Haier JSON for snapshot row (optType=INSERT). */
+    private String buildHaierSnapshotJson(ResultSet rs, ResultSetMetaData meta, String tbl)
+            throws SQLException {
+        String pkCol = null;
+        if (cachedPkByTable != null) {
+            pkCol = cachedPkByTable.get(tbl);
+        }
+        long now = System.currentTimeMillis();
+        StringBuilder sb = new StringBuilder(512);
+        sb.append('{');
+        sb.append("\"database\":\"").append(escapeJson(database)).append('"');
+        sb.append(",\"table\":\"").append(escapeJson(tbl)).append('"');
+        sb.append(",\"optType\":\"INSERT\"");
+        if (pkCol != null) {
+            sb.append(",\"pkNames\":[\"").append(escapeJson(pkCol)).append("\"]");
+            String pkVal = null;
+            try {
+                pkVal = rs.getString(pkCol);
+            } catch (SQLException e) {
+                // PK column not in result set
+            }
+            if (pkVal != null && !rs.wasNull()) {
+                sb.append(",\"pkValues\":\"").append(escapeJson(pkVal)).append('"');
+            } else {
+                sb.append(",\"pkValues\":null");
+            }
+        } else {
+            sb.append(",\"pkNames\":[]");
+            sb.append(",\"pkValues\":null");
+        }
+        sb.append(",\"es\":").append(now);
+        sb.append(",\"ts\":").append(now);
+        sb.append(",\"data\":");
+        appendResultSetAsJson(sb, rs, meta);
+        sb.append(",\"old\":null");
+        sb.append('}');
+        return sb.toString();
+    }
+
+    /** Append ResultSet columns as a JSON object. */
+    private void appendResultSetAsJson(StringBuilder sb, ResultSet rs, ResultSetMetaData meta)
+            throws SQLException {
+        sb.append('{');
+        for (int i = 1; i <= meta.getColumnCount(); i++) {
+            if (i > 1) {
+                sb.append(',');
+            }
+            String colName = meta.getColumnName(i);
+            sb.append('"').append(escapeJson(colName)).append("\":");
+            String val = rs.getString(i);
+            if (rs.wasNull()) {
+                sb.append("null");
+            } else {
+                sb.append('"').append(escapeJson(val)).append('"');
+            }
+        }
+        sb.append('}');
     }
 
     private Object convertColumnValueByOid(int typeOid, String value) {
@@ -1413,6 +1598,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         private String sslMode = GaussDBCDCOptions.SSL_MODE.defaultValue();
         private Integer replicationPort;
         private String outputFormat = "raw";
+        private String outputJsonFormat = "debezium";
 
         public Builder hostname(String hostname) {
             this.hostname = hostname;
@@ -1516,6 +1702,11 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
         public Builder outputFormat(String outputFormat) {
             this.outputFormat = outputFormat;
+            return this;
+        }
+
+        public Builder outputJsonFormat(String outputJsonFormat) {
+            this.outputJsonFormat = outputJsonFormat;
             return this;
         }
 

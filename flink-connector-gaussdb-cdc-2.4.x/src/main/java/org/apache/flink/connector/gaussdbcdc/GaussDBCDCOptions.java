@@ -99,6 +99,19 @@ public class GaussDBCDCOptions {
                                     + "with table name, operation type, and column values "
                                     + "(supports heterogeneous tables with different schemas).");
 
+    public static final ConfigOption<String> OUTPUT_JSON_FORMAT =
+            ConfigOptions.key("output.json.format")
+                    .stringType()
+                    .defaultValue("debezium")
+                    .withDescription(
+                            "JSON output format when output.format=json. "
+                                    + "'debezium' (default): Debezium standard format "
+                                    + "(before/after/source/op/ts_ms), compatible with Flink CDC. "
+                                    + "'canal': Canal standard format "
+                                    + "(data/old/database/table/type/es/ts/pkNames/isDdl/sqlType). "
+                                    + "'haier': Haier customized Canal format "
+                                    + "(data/old/database/table/optType/es/ts/pkNames/pkValues).");
+
     public static final ConfigOption<String> SLOT_NAME =
             ConfigOptions.key("slot.name")
                     .stringType()
