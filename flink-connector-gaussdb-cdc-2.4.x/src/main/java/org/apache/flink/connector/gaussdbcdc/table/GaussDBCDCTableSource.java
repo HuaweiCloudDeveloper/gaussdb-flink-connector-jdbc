@@ -48,6 +48,8 @@ public class GaussDBCDCTableSource implements ScanTableSource {
     private final String sslMode;
     /** Optional dedicated port for WAL replication streaming; null = reuse {@link #port}. */
     private final Integer replicationPort;
+    /** Output format: "raw" (default, RowData) or "json" (single STRING column). */
+    private final String outputFormat;
 
     private final DataType physicalRowDataType;
 
@@ -69,6 +71,7 @@ public class GaussDBCDCTableSource implements ScanTableSource {
             boolean sendingBatch,
             String sslMode,
             Integer replicationPort,
+            String outputFormat,
             DataType physicalRowDataType) {
         this.hostname = hostname;
         this.port = port;
@@ -87,6 +90,7 @@ public class GaussDBCDCTableSource implements ScanTableSource {
         this.sendingBatch = sendingBatch;
         this.sslMode = sslMode;
         this.replicationPort = replicationPort;
+        this.outputFormat = outputFormat;
         this.physicalRowDataType = physicalRowDataType;
     }
 
@@ -116,6 +120,7 @@ public class GaussDBCDCTableSource implements ScanTableSource {
                         .sendingBatch(sendingBatch)
                         .sslMode(sslMode)
                         .replicationPort(replicationPort)
+                        .outputFormat(outputFormat)
                         .build();
 
         // SourceFunctionProvider is available since Flink 1.11, compatible with 1.13~1.17
@@ -142,6 +147,7 @@ public class GaussDBCDCTableSource implements ScanTableSource {
                 sendingBatch,
                 sslMode,
                 replicationPort,
+                outputFormat,
                 physicalRowDataType);
     }
 

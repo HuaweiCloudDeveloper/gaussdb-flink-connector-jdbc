@@ -80,7 +80,24 @@ public class GaussDBCDCOptions {
             ConfigOptions.key("table-name")
                     .stringType()
                     .noDefaultValue()
-                    .withDescription("Table name of the GaussDB table to monitor.");
+                    .withDescription(
+                            "Table name of the GaussDB table to monitor. "
+                                    + "Supports regex matching for multi-table capture, e.g. "
+                                    + "'orders_.*' matches all tables starting with 'orders_'. "
+                                    + "When no regex metacharacters are present, exact match "
+                                    + "is used (backward compatible with single-table mode).");
+
+    public static final ConfigOption<String> OUTPUT_FORMAT =
+            ConfigOptions.key("output.format")
+                    .stringType()
+                    .defaultValue("raw")
+                    .withDescription(
+                            "Output format for CDC events. "
+                                    + "'raw' (default): outputs RowData with fixed columns "
+                                    + "(requires homogeneous table schemas). "
+                                    + "'json': outputs a single STRING column containing JSON "
+                                    + "with table name, operation type, and column values "
+                                    + "(supports heterogeneous tables with different schemas).");
 
     public static final ConfigOption<String> SLOT_NAME =
             ConfigOptions.key("slot.name")

@@ -102,17 +102,31 @@ class GaussDBCDCSourceFunctionRuntimeTest {
     @Test
     void testConvertWalColumnsToRowData() throws Exception {
         GaussDBCDCSourceFunction source = createMinimalSource();
+        initTransientMaps(source);
+        // Pre-populate column cache for test_table so convertWalColumnsToRowData finds it
+        java.lang.reflect.Field colsField =
+                GaussDBCDCSourceFunction.class.getDeclaredField("cachedColumnsByTable");
+        colsField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        java.util.Map<String, java.util.List<String>> colsMap =
+                (java.util.Map<String, java.util.List<String>>) colsField.get(source);
+        java.util.List<String> cols = new ArrayList<>();
+        cols.add("id");
+        cols.add("name");
+        cols.add("age");
+        cols.add("score");
+        colsMap.put("test_table", cols);
         Method method =
                 GaussDBCDCSourceFunction.class.getDeclaredMethod(
-                        "convertWalColumnsToRowData", List.class);
+                        "convertWalColumnsToRowData", List.class, String.class);
         method.setAccessible(true);
 
         // Null list
-        Object result = method.invoke(source, (Object) null);
+        Object result = method.invoke(source, (Object) null, "test_table");
         assertThat(result).isNull();
 
         // Empty list
-        result = method.invoke(source, Collections.emptyList());
+        result = method.invoke(source, Collections.emptyList(), "test_table");
         assertThat(result).isNull();
 
         // List with values
@@ -122,7 +136,7 @@ class GaussDBCDCSourceFunctionRuntimeTest {
         columns.add(new WalChange.ColumnValue("age", 23, "20", false));
         columns.add(new WalChange.ColumnValue("score", 701, "95.5", false));
 
-        result = method.invoke(source, columns);
+        result = method.invoke(source, columns, "test_table");
         assertThat(result).isInstanceOf(RowData.class);
         RowData row = (RowData) result;
         assertThat(row.getArity()).isEqualTo(4);
@@ -132,16 +146,28 @@ class GaussDBCDCSourceFunctionRuntimeTest {
     @Test
     void testConvertWalColumnsToRowDataWithNull() throws Exception {
         GaussDBCDCSourceFunction source = createMinimalSource();
+        initTransientMaps(source);
+        // Pre-populate column cache for test_table
+        java.lang.reflect.Field colsField =
+                GaussDBCDCSourceFunction.class.getDeclaredField("cachedColumnsByTable");
+        colsField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        java.util.Map<String, java.util.List<String>> colsMap =
+                (java.util.Map<String, java.util.List<String>>) colsField.get(source);
+        java.util.List<String> cols = new ArrayList<>();
+        cols.add("id");
+        cols.add("name");
+        colsMap.put("test_table", cols);
         Method method =
                 GaussDBCDCSourceFunction.class.getDeclaredMethod(
-                        "convertWalColumnsToRowData", List.class);
+                        "convertWalColumnsToRowData", List.class, String.class);
         method.setAccessible(true);
 
         List<WalChange.ColumnValue> columns = new ArrayList<>();
         columns.add(new WalChange.ColumnValue("id", 23, "1", false));
         columns.add(new WalChange.ColumnValue("name", 25, null, true));
 
-        Object result = method.invoke(source, columns);
+        Object result = method.invoke(source, columns, "test_table");
         assertThat(result).isInstanceOf(RowData.class);
         RowData row = (RowData) result;
         assertThat(row.getArity()).isEqualTo(2);
@@ -151,6 +177,7 @@ class GaussDBCDCSourceFunctionRuntimeTest {
     @Test
     void testGetTableColumns() throws Exception {
         GaussDBCDCSourceFunction source = createMinimalSource();
+        initTransientMaps(source);
 
         // Mock connection
         Connection conn = mock(Connection.class);
@@ -167,10 +194,11 @@ class GaussDBCDCSourceFunctionRuntimeTest {
         connField.setAccessible(true);
         connField.set(source, conn);
 
-        Method method = GaussDBCDCSourceFunction.class.getDeclaredMethod("getTableColumns");
+        Method method =
+                GaussDBCDCSourceFunction.class.getDeclaredMethod("getTableColumns", String.class);
         method.setAccessible(true);
 
-        String result = (String) method.invoke(source);
+        String result = (String) method.invoke(source, "test_table");
         assertThat(result).isEqualTo("id, name");
     }
 
@@ -194,10 +222,12 @@ class GaussDBCDCSourceFunctionRuntimeTest {
         connField.setAccessible(true);
         connField.set(source, conn);
 
-        Method method = GaussDBCDCSourceFunction.class.getDeclaredMethod("getIdRange");
+        Method method =
+                GaussDBCDCSourceFunction.class.getDeclaredMethod(
+                        "getIdRange", String.class, String.class);
         method.setAccessible(true);
 
-        long[] result = (long[]) method.invoke(source);
+        long[] result = (long[]) method.invoke(source, "test_table", "id");
         assertThat(result).containsExactly(1L, 1000L);
     }
 
@@ -220,10 +250,12 @@ class GaussDBCDCSourceFunctionRuntimeTest {
         connField.setAccessible(true);
         connField.set(source, conn);
 
-        Method method = GaussDBCDCSourceFunction.class.getDeclaredMethod("getIdRange");
+        Method method =
+                GaussDBCDCSourceFunction.class.getDeclaredMethod(
+                        "getIdRange", String.class, String.class);
         method.setAccessible(true);
 
-        long[] result = (long[]) method.invoke(source);
+        long[] result = (long[]) method.invoke(source, "test_table", "id");
         assertThat(result).containsExactly(0L, -1L);
     }
 
@@ -422,5 +454,18 @@ class GaussDBCDCSourceFunctionRuntimeTest {
                 .username("root")
                 .password("pass")
                 .build();
+    }
+
+    /** Initialize transient Map fields that are normally set in open(). */
+    private void initTransientMaps(GaussDBCDCSourceFunction source) throws Exception {
+        java.lang.reflect.Field colsField =
+                GaussDBCDCSourceFunction.class.getDeclaredField("cachedColumnsByTable");
+        colsField.setAccessible(true);
+        colsField.set(source, new java.util.HashMap<>());
+
+        java.lang.reflect.Field pkField =
+                GaussDBCDCSourceFunction.class.getDeclaredField("cachedPkByTable");
+        pkField.setAccessible(true);
+        pkField.set(source, new java.util.HashMap<>());
     }
 }

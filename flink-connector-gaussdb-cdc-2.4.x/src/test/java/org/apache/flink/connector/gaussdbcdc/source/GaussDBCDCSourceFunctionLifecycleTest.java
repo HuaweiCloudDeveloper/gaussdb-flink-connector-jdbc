@@ -40,7 +40,9 @@ import java.sql.ResultSetMetaData;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -56,6 +58,8 @@ import static org.mockito.Mockito.when;
 /** Comprehensive tests for {@link GaussDBCDCSourceFunction} lifecycle and runtime methods. */
 class GaussDBCDCSourceFunctionLifecycleTest {
 
+    private static final String TABLE_NAME = "test_table";
+
     private GaussDBCDCSourceFunction source;
     private Connection mockConnection;
     private SourceFunction.SourceContext<RowData> mockContext;
@@ -68,6 +72,29 @@ class GaussDBCDCSourceFunctionLifecycleTest {
         mockContext = mock(SourceFunction.SourceContext.class);
         checkpointLock = new Object();
         when(mockContext.getCheckpointLock()).thenReturn(checkpointLock);
+        // Multi-table support: initialize per-table cache maps used by readSnapshot
+        // and convertWalColumnsToRowData. open() normally does this but the tests
+        // bypass open(), so we set the fields here via reflection.
+        try {
+            setField(source, "cachedColumnsByTable", new HashMap<String, List<String>>());
+            setField(source, "cachedPkByTable", new HashMap<String, String>());
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /** Pre-populate column cache for a table, used by WAL streaming tests. */
+    @SuppressWarnings("unchecked")
+    private void cacheTestTableColumns() throws Exception {
+        Map<String, List<String>> colsMap =
+                (Map<String, List<String>>) getField(source, "cachedColumnsByTable", Map.class);
+        List<String> cols = new ArrayList<>();
+        cols.add("id");
+        colsMap.put("test_table", cols);
+
+        Map<String, String> pkMap =
+                (Map<String, String>) getField(source, "cachedPkByTable", Map.class);
+        pkMap.put("test_table", "id");
     }
 
     // ---- open() tests ----
@@ -172,9 +199,9 @@ class GaussDBCDCSourceFunctionLifecycleTest {
 
         Method method =
                 GaussDBCDCSourceFunction.class.getDeclaredMethod(
-                        "readSnapshot", SourceFunction.SourceContext.class);
+                        "readSnapshot", SourceFunction.SourceContext.class, String.class);
         method.setAccessible(true);
-        method.invoke(source, mockContext);
+        method.invoke(source, mockContext, TABLE_NAME);
 
         verify(mockContext, atLeastOnce()).collect(any(RowData.class));
     }
@@ -186,9 +213,9 @@ class GaussDBCDCSourceFunctionLifecycleTest {
 
         Method method =
                 GaussDBCDCSourceFunction.class.getDeclaredMethod(
-                        "readSnapshot", SourceFunction.SourceContext.class);
+                        "readSnapshot", SourceFunction.SourceContext.class, String.class);
         method.setAccessible(true);
-        method.invoke(source, mockContext);
+        method.invoke(source, mockContext, TABLE_NAME);
 
         verify(mockContext, atLeastOnce()).collect(any(RowData.class));
     }
@@ -200,9 +227,9 @@ class GaussDBCDCSourceFunctionLifecycleTest {
 
         Method method =
                 GaussDBCDCSourceFunction.class.getDeclaredMethod(
-                        "readSnapshot", SourceFunction.SourceContext.class);
+                        "readSnapshot", SourceFunction.SourceContext.class, String.class);
         method.setAccessible(true);
-        method.invoke(source, mockContext);
+        method.invoke(source, mockContext, TABLE_NAME);
 
         verify(mockContext, atLeastOnce()).collect(any(RowData.class));
     }
@@ -213,9 +240,9 @@ class GaussDBCDCSourceFunctionLifecycleTest {
 
         Method method =
                 GaussDBCDCSourceFunction.class.getDeclaredMethod(
-                        "readSnapshot", SourceFunction.SourceContext.class);
+                        "readSnapshot", SourceFunction.SourceContext.class, String.class);
         method.setAccessible(true);
-        method.invoke(source, mockContext);
+        method.invoke(source, mockContext, TABLE_NAME);
 
         verify(mockContext, never()).collect(any(RowData.class));
     }
@@ -224,6 +251,7 @@ class GaussDBCDCSourceFunctionLifecycleTest {
 
     @Test
     void testRunWalStreamingWithInsertChange() throws Exception {
+        cacheTestTableColumns();
         WalReplicationStream walStream = mock(WalReplicationStream.class);
         List<WalChange> changes = new ArrayList<>();
         WalChange insert =
@@ -260,6 +288,7 @@ class GaussDBCDCSourceFunctionLifecycleTest {
 
     @Test
     void testRunWalStreamingWithUpdateChange() throws Exception {
+        cacheTestTableColumns();
         WalReplicationStream walStream = mock(WalReplicationStream.class);
         List<WalChange> changes = new ArrayList<>();
         WalChange update =
@@ -323,6 +352,7 @@ class GaussDBCDCSourceFunctionLifecycleTest {
 
     @Test
     void testRunWalStreamingWithDeleteChange() throws Exception {
+        cacheTestTableColumns();
         WalReplicationStream walStream = mock(WalReplicationStream.class);
         List<WalChange> changes = new ArrayList<>();
         WalChange delete =

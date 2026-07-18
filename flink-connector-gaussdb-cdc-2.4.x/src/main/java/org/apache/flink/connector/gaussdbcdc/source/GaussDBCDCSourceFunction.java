@@ -51,7 +51,10 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * A CDC SourceFunction implementation for GaussDB that captures change events from GaussDB WAL.
@@ -129,6 +132,11 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
      * replication. See {@link GaussDBCDCOptions#REPLICATION_PORT}.
      */
     private final Integer replicationPort;
+    /** Output format: "raw" (RowData, default) or "json" (single STRING column with JSON). */
+    private final String outputFormat;
+
+    /** Compiled regex pattern for table-name matching. Null means exact match on tableName. */
+    private transient Pattern tablePattern;
 
     // Runtime state
     private transient volatile boolean running = true;
@@ -137,9 +145,9 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private transient ChangeDataPoller changeDataPoller;
     private transient boolean walStreamInitialized = false;
 
-    // Cached column metadata for WAL change conversion
-    private transient List<String> cachedColumnNames;
-    private transient String cachedPkColumn;
+    // Cached column metadata for WAL change conversion — supports multi-table via Map
+    private transient Map<String, List<String>> cachedColumnsByTable;
+    private transient Map<String, String> cachedPkByTable;
 
     // LSN recorded after snapshot to avoid WAL replay of already-snapshot data
     private transient String snapshotStartLsn = null;
@@ -171,6 +179,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         this.sendingBatch = builder.sendingBatch;
         this.sslMode = builder.sslMode;
         this.replicationPort = builder.replicationPort;
+        this.outputFormat = builder.outputFormat;
     }
 
     @Override
@@ -183,6 +192,17 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                 String.format(
                         "jdbc:gaussdb://%s:%d/%s?sslmode=%s", hostname, port, database, sslMode);
         this.connection = DriverManager.getConnection(url, username, password);
+
+        // Initialize multi-table structures
+        this.cachedColumnsByTable = new HashMap<>();
+        this.cachedPkByTable = new HashMap<>();
+
+        // Compile regex pattern if table-name contains regex metacharacters
+        if (tableName != null && tableName.matches(".*[.*+?^$\\[\\]()|\\\\].*")) {
+            tablePattern = Pattern.compile(tableName, Pattern.CASE_INSENSITIVE);
+            LOG.info(
+                    "Table-name '{}' compiled as regex pattern for multi-table capture", tableName);
+        }
 
         if (walMode) {
             this.walReplicationStream =
@@ -205,53 +225,66 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                         port);
             }
             LOG.info(
-                    "Using WAL mode with plugin={}, parallel-decode-num={}, decode-style={}",
+                    "Using WAL mode with plugin={}, parallel-decode-num={}, decode-style={}, output.format={}",
                     decodePlugin,
                     parallelDecodeNum,
-                    decodeStyle);
+                    decodeStyle,
+                    outputFormat);
         } else {
-            String pkColumn = getPrimaryKeyColumn();
-            this.changeDataPoller = new ChangeDataPoller(connection, schema, tableName, pkColumn);
-            LOG.info("Using polling-based CDC mode, primary key column: {}", pkColumn);
+            // Polling mode: discover matching tables and create poller for each
+            List<String> matchedTables = discoverMatchingTables();
+            if (matchedTables.isEmpty()) {
+                throw new SQLException(
+                        "No tables found matching pattern '" + tableName + "' in schema " + schema);
+            }
+            LOG.info("Discovered {} matching table(s): {}", matchedTables.size(), matchedTables);
+            this.changeDataPoller =
+                    new ChangeDataPoller(connection, schema, matchedTables, outputFormat);
+            LOG.info("Using polling-based CDC mode for {} table(s)", matchedTables.size());
         }
 
         // Cache column names for WAL change conversion (needed because DELETE/UPDATE
-        // may only send a subset of columns, but Flink expects full-row arity)
-        try {
-            java.sql.DatabaseMetaData meta = connection.getMetaData();
-            java.util.List<String> colNames = new java.util.ArrayList<>();
-            try (java.sql.ResultSet rs = meta.getColumns(null, schema, tableName, null)) {
-                while (rs.next()) {
-                    colNames.add(rs.getString("COLUMN_NAME"));
+        // may only send a subset of columns, but Flink expects full-row arity).
+        // In multi-table mode, cache columns for each discovered table.
+        if (walMode) {
+            try {
+                List<String> tablesToCache = discoverMatchingTables();
+                for (String tbl : tablesToCache) {
+                    cacheTableColumns(tbl);
+                    // Pre-cache PK for each table
+                    getPrimaryKeyColumn(tbl);
                 }
+                LOG.info("Cached column metadata for {} table(s)", tablesToCache.size());
+            } catch (Exception e) {
+                LOG.warn("Failed to cache column metadata for some tables: {}", e.getMessage());
             }
-            this.cachedColumnNames = colNames;
-            LOG.info(
-                    "Cached {} columns for table {}.{}: {}",
-                    colNames.size(),
-                    schema,
-                    tableName,
-                    colNames);
-        } catch (Exception e) {
-            LOG.warn("Failed to cache column names for {}.{}", schema, tableName, e);
         }
 
         LOG.info(
-                "GaussDB CDC SourceFunction opened: {}:{}/{}.{}",
+                "GaussDB CDC SourceFunction opened: {}:{}/{}.{} (output.format={})",
                 hostname,
                 port,
                 database,
                 schema,
-                tableName);
+                tableName,
+                outputFormat);
     }
 
     @Override
     public void run(SourceContext<RowData> ctx) throws Exception {
         // Phase 1: Snapshot - read initial table data
         if (snapshotMode) {
-            LOG.info("Starting snapshot phase for {}.{}", schema, tableName);
-            readSnapshot(ctx);
-            LOG.info("Snapshot phase completed for {}.{}", schema, tableName);
+            List<String> tables = discoverMatchingTables();
+            LOG.info(
+                    "Starting snapshot phase for {} table(s) matching '{}': {}",
+                    tables.size(),
+                    tableName,
+                    tables);
+            for (String tbl : tables) {
+                readSnapshot(ctx, tbl);
+                LOG.info("Snapshot completed for table {}.{}", schema, tbl);
+            }
+            LOG.info("Snapshot phase completed for all {} table(s)", tables.size());
         }
 
         // Phase 2: Streaming - continuously capture changes
@@ -270,7 +303,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     }
 
     /** Phase 1: Read initial snapshot via JDBC SELECT with parallel split support. */
-    private void readSnapshot(SourceContext<RowData> ctx) throws SQLException {
+    private void readSnapshot(SourceContext<RowData> ctx, String tbl) throws SQLException {
         // Record WAL position BEFORE snapshot for diagnostics.
         if (walMode) {
             String preSnapshotLsn = getSlotConfirmedFlush();
@@ -279,12 +312,12 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
         int subtaskIndex = getRuntimeContext().getIndexOfThisSubtask();
         int numSubtasks = getRuntimeContext().getNumberOfParallelSubtasks();
-        String columns = getTableColumns();
-        String pkColumn = getPrimaryKeyColumn();
+        String columns = getTableColumns(tbl);
+        String pkColumn = getPrimaryKeyColumn(tbl);
 
         if (numSubtasks > 1) {
             // Parallel snapshot: each subtask reads a different id range
-            long[] range = getIdRange();
+            long[] range = getIdRange(tbl, pkColumn);
             long minId = range[0];
             long maxId = range[1];
             long totalRange = maxId - minId + 1;
@@ -299,16 +332,18 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             }
 
             LOG.info(
-                    "Parallel snapshot: subtask {}/{}, id range [{}, {}]",
+                    "Parallel snapshot: subtask {}/{}, id range [{}, {}] for table {}.{}",
                     subtaskIndex,
                     numSubtasks,
                     startId,
-                    endId);
+                    endId,
+                    schema,
+                    tbl);
 
             String sql =
                     String.format(
                             "SELECT %s FROM %s.%s WHERE %s >= ? AND %s <= ? ORDER BY %s",
-                            columns, schema, tableName, pkColumn, pkColumn, pkColumn);
+                            columns, schema, tbl, pkColumn, pkColumn, pkColumn);
 
             int count = 0;
             try (PreparedStatement stmt = connection.prepareStatement(sql)) {
@@ -317,7 +352,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                 try (ResultSet rs = stmt.executeQuery()) {
                     ResultSetMetaData meta = rs.getMetaData();
                     while (rs.next()) {
-                        RowData row = convertToRowDataDynamic(rs, meta);
+                        RowData row = convertSnapshotRow(rs, meta, tbl);
                         synchronized (ctx.getCheckpointLock()) {
                             ctx.collect(row);
                         }
@@ -330,27 +365,26 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                     subtaskIndex,
                     count,
                     schema,
-                    tableName);
+                    tbl);
         } else {
             // Single subtask: read all data
             String sql =
                     String.format(
-                            "SELECT %s FROM %s.%s ORDER BY %s",
-                            columns, schema, tableName, pkColumn);
+                            "SELECT %s FROM %s.%s ORDER BY %s", columns, schema, tbl, pkColumn);
 
             int count = 0;
             try (PreparedStatement stmt = connection.prepareStatement(sql);
                     ResultSet rs = stmt.executeQuery()) {
                 ResultSetMetaData meta = rs.getMetaData();
                 while (rs.next()) {
-                    RowData row = convertToRowDataDynamic(rs, meta);
+                    RowData row = convertSnapshotRow(rs, meta, tbl);
                     synchronized (ctx.getCheckpointLock()) {
                         ctx.collect(row);
                     }
                     count++;
                 }
             }
-            LOG.info("Snapshot read {} rows from {}.{}", count, schema, tableName);
+            LOG.info("Snapshot read {} rows from {}.{}", count, schema, tbl);
         }
 
         // Capture WAL position AFTER snapshot completes. This ensures the
@@ -363,11 +397,8 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     }
 
     /** Get the min and max id of the table for parallel split calculation. */
-    private long[] getIdRange() throws SQLException {
-        String pkCol = getPrimaryKeyColumn();
-        String sql =
-                String.format(
-                        "SELECT MIN(%s), MAX(%s) FROM %s.%s", pkCol, pkCol, schema, tableName);
+    private long[] getIdRange(String tbl, String pkCol) throws SQLException {
+        String sql = String.format("SELECT MIN(%s), MAX(%s) FROM %s.%s", pkCol, pkCol, schema, tbl);
         try (PreparedStatement stmt = connection.prepareStatement(sql);
                 ResultSet rs = stmt.executeQuery()) {
             if (rs.next()) {
@@ -384,14 +415,34 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     }
 
     /**
-     * Dynamically detect the primary key column name for the table via
+     * Dynamically detect the primary key column name for a table via
      * DatabaseMetaData.getPrimaryKeys(). Falls back to "id" for backward compatibility if no
-     * primary key is found.
+     * primary key is found. Results are cached per-table in {@link #cachedPkByTable}.
+     *
+     * @param tbl the table name to detect PK for
+     * @return the primary key column name
+     */
+    private String getPrimaryKeyColumn(String tbl) throws SQLException {
+        if (cachedPkByTable != null && cachedPkByTable.containsKey(tbl)) {
+            return cachedPkByTable.get(tbl);
+        }
+        String result = detectPrimaryKeyColumn(tbl);
+        if (cachedPkByTable != null) {
+            cachedPkByTable.put(tbl, result);
+        }
+        return result;
+    }
+
+    /**
+     * @deprecated Use {@link #getPrimaryKeyColumn(String)} instead. Kept for backward compatibility
+     *     — delegates to {@code getPrimaryKeyColumn(tableName)}.
      */
     private String getPrimaryKeyColumn() throws SQLException {
-        if (cachedPkColumn != null) {
-            return cachedPkColumn;
-        }
+        return getPrimaryKeyColumn(tableName);
+    }
+
+    /** Actual PK detection logic, parameterized by table name. */
+    private String detectPrimaryKeyColumn(String tbl) throws SQLException {
         // Try DatabaseMetaData.getPrimaryKeys()
         try {
             if (connection == null) {
@@ -399,17 +450,16 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             }
             java.sql.DatabaseMetaData meta = connection.getMetaData();
             if (meta != null) {
-                ResultSet pkRs = meta.getPrimaryKeys(null, schema, tableName);
+                ResultSet pkRs = meta.getPrimaryKeys(null, schema, tbl);
                 if (pkRs != null) {
                     try (ResultSet rs = pkRs) {
                         if (rs.next()) {
                             String pkName = rs.getString("COLUMN_NAME");
                             if (pkName != null && !pkName.isEmpty()) {
-                                cachedPkColumn = pkName;
                                 LOG.info(
                                         "Detected primary key column for {}.{}: {}",
                                         schema,
-                                        tableName,
+                                        tbl,
                                         pkName);
                                 return pkName;
                             }
@@ -418,13 +468,8 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                 }
             }
         } catch (SQLException e) {
-            LOG.warn(
-                    "Failed to detect primary key for {}.{}: {}",
-                    schema,
-                    tableName,
-                    e.getMessage());
+            LOG.warn("Failed to detect primary key for {}.{}: {}", schema, tbl, e.getMessage());
         }
-        // Fallback: try pg_index query
         // Fallback: try pg_index query
         PreparedStatement stmt = null;
         try {
@@ -436,16 +481,15 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             if (stmt == null) {
                 throw new SQLException("prepareStatement returned null");
             }
-            stmt.setString(1, schema + "." + tableName);
+            stmt.setString(1, schema + "." + tbl);
             try (ResultSet rs = stmt.executeQuery()) {
                 if (rs.next()) {
                     String pkName = rs.getString(1);
                     if (pkName != null && !pkName.isEmpty()) {
-                        cachedPkColumn = pkName;
                         LOG.info(
                                 "Detected primary key column (pg_index) for {}.{}: {}",
                                 schema,
-                                tableName,
+                                tbl,
                                 pkName);
                         return pkName;
                     }
@@ -455,7 +499,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             LOG.warn(
                     "pg_index primary key detection failed for {}.{}: {}",
                     schema,
-                    tableName,
+                    tbl,
                     e.getMessage());
         } finally {
             if (stmt != null) {
@@ -466,9 +510,8 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             }
         }
         // Final fallback: "id" for backward compatibility
-        LOG.warn("No primary key found for {}.{}; falling back to \"id\"", schema, tableName);
-        cachedPkColumn = "id";
-        return cachedPkColumn;
+        LOG.warn("No primary key found for {}.{}; falling back to \"id\"", schema, tbl);
+        return "id";
     }
 
     /** Phase 2a: WAL streaming using WalReplicationStream. */
@@ -531,13 +574,17 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
                     // Filter out changes from non-target tables.
                     // WAL logical decoding captures ALL changes in the database,
-                    // but we only want changes for the configured table.
+                    // but we only want changes for tables matching the configured pattern.
                     String changeSchema = change.getSchema();
                     String changeTable = change.getTable();
-                    if (changeSchema == null
-                            || changeTable == null
-                            || !changeSchema.equalsIgnoreCase(schema)
-                            || !changeTable.equalsIgnoreCase(tableName)) {
+                    if (changeSchema == null || changeTable == null) {
+                        LOG.debug(
+                                "Skipping change with null schema/table: {}.{}",
+                                changeSchema,
+                                changeTable);
+                        continue;
+                    }
+                    if (!isTableMatch(changeSchema, changeTable)) {
                         LOG.debug(
                                 "Skipping change from non-target table: {}.{}",
                                 changeSchema,
@@ -562,19 +609,27 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                     WalChange.ChangeType changeType = change.getType();
                     RowData row = null;
                     try {
-                        if (changeType == WalChange.ChangeType.INSERT) {
-                            row = convertWalColumnsToRowData(change.getAfterColumns());
-                        } else if (changeType == WalChange.ChangeType.UPDATE) {
-                            row = convertWalColumnsToRowData(change.getAfterColumns());
-                        } else if (changeType == WalChange.ChangeType.DELETE) {
-                            row = convertWalColumnsToRowData(change.getBeforeColumns());
-                            if (row != null) {
-                                row.setRowKind(RowKind.DELETE);
+                        if ("json".equalsIgnoreCase(outputFormat)) {
+                            // JSON output mode: single STRING column with all data
+                            row = convertWalChangeToJson(change);
+                        } else {
+                            // Raw output mode: RowData with fixed columns per table
+                            if (changeType == WalChange.ChangeType.INSERT) {
+                                row =
+                                        convertWalColumnsToRowData(
+                                                change.getAfterColumns(), changeTable);
+                            } else if (changeType == WalChange.ChangeType.UPDATE) {
+                                row =
+                                        convertWalColumnsToRowData(
+                                                change.getAfterColumns(), changeTable);
+                            } else if (changeType == WalChange.ChangeType.DELETE) {
+                                row =
+                                        convertWalColumnsToRowData(
+                                                change.getBeforeColumns(), changeTable);
+                                if (row != null) {
+                                    row.setRowKind(RowKind.DELETE);
+                                }
                             }
-                            LOG.debug(
-                                    "Detected DELETE on {}.{}",
-                                    change.getSchema(),
-                                    change.getTable());
                         }
                     } catch (Exception e) {
                         LOG.warn(
@@ -855,38 +910,103 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
     // ---- Data conversion helpers ----
 
-    private String getTableColumns() throws SQLException {
+    /**
+     * Discover all tables in the configured schema that match the table-name pattern. Uses regex
+     * matching if table-name contains regex metacharacters, otherwise falls back to exact match.
+     *
+     * @return list of matching table names (never null, may be empty)
+     */
+    private List<String> discoverMatchingTables() throws SQLException {
+        List<String> result = new ArrayList<>();
         DatabaseMetaData meta = connection.getMetaData();
-        List<String> columns = new ArrayList<>();
-        try (ResultSet rs = meta.getColumns(null, schema, tableName, null)) {
+        try (ResultSet rs = meta.getTables(null, schema, "%", new String[] {"TABLE"})) {
             while (rs.next()) {
-                columns.add(rs.getString("COLUMN_NAME"));
+                String tbl = rs.getString("TABLE_NAME");
+                if (tbl != null && isTableMatch(schema, tbl)) {
+                    result.add(tbl);
+                }
             }
         }
-        if (columns.isEmpty()) {
-            throw new SQLException("No columns found for table " + schema + "." + tableName);
-        }
-        return String.join(", ", columns);
+        return result;
     }
 
-    private RowData convertWalColumnsToRowData(List<WalChange.ColumnValue> columns) {
+    /**
+     * Check if a table matches the configured table-name pattern.
+     *
+     * <p>If tablePattern is non-null (regex mode), uses regex matching. Otherwise, does exact
+     * case-insensitive match against tableName.
+     *
+     * @param tableSchema the schema of the change/table (must match configured schema)
+     * @param tbl the table name to check
+     * @return true if the table matches
+     */
+    private boolean isTableMatch(String tableSchema, String tbl) {
+        // Schema must always match
+        if (!tableSchema.equalsIgnoreCase(schema)) {
+            return false;
+        }
+        if (tablePattern != null) {
+            return tablePattern.matcher(tbl).matches();
+        }
+        // Exact match (backward compatible single-table mode)
+        return tbl.equalsIgnoreCase(tableName);
+    }
+
+    /**
+     * Cache column names for a specific table.
+     *
+     * @param tbl the table name
+     */
+    private void cacheTableColumns(String tbl) throws SQLException {
+        if (cachedColumnsByTable.containsKey(tbl)) {
+            return;
+        }
+        DatabaseMetaData meta = connection.getMetaData();
+        List<String> colNames = new ArrayList<>();
+        try (ResultSet rs = meta.getColumns(null, schema, tbl, null)) {
+            while (rs.next()) {
+                colNames.add(rs.getString("COLUMN_NAME"));
+            }
+        }
+        cachedColumnsByTable.put(tbl, colNames);
+        LOG.info("Cached {} columns for table {}.{}: {}", colNames.size(), schema, tbl, colNames);
+    }
+
+    private String getTableColumns(String tbl) throws SQLException {
+        List<String> cols = cachedColumnsByTable.get(tbl);
+        if (cols == null) {
+            cacheTableColumns(tbl);
+            cols = cachedColumnsByTable.get(tbl);
+        }
+        if (cols == null || cols.isEmpty()) {
+            throw new SQLException("No columns found for table " + schema + "." + tbl);
+        }
+        return String.join(", ", cols);
+    }
+
+    /**
+     * Convert WAL column values to RowData using cached column metadata for the specific table.
+     *
+     * @param columns the WAL column values
+     * @param tbl the table name (for looking up cached column metadata)
+     * @return RowData with full row arity
+     */
+    private RowData convertWalColumnsToRowData(List<WalChange.ColumnValue> columns, String tbl) {
         if (columns == null || columns.isEmpty()) {
             return null;
         }
-        // Use cached column count to ensure RowData arity matches the full table schema.
-        // WAL events (especially DELETE) may only contain a subset of columns,
-        // but Flink's serializer expects the full row arity.
-        int colCount = (cachedColumnNames != null) ? cachedColumnNames.size() : columns.size();
+        List<String> cachedCols = cachedColumnsByTable.get(tbl);
+        int colCount = (cachedCols != null) ? cachedCols.size() : columns.size();
         GenericRowData row = new GenericRowData(colCount);
 
-        if (cachedColumnNames != null && !cachedColumnNames.isEmpty()) {
+        if (cachedCols != null && !cachedCols.isEmpty()) {
             // Map WAL columns by name to the correct positions
             java.util.Map<String, WalChange.ColumnValue> colMap = new java.util.HashMap<>();
             for (WalChange.ColumnValue col : columns) {
                 colMap.put(col.getColumnName(), col);
             }
-            for (int i = 0; i < cachedColumnNames.size(); i++) {
-                String colName = cachedColumnNames.get(i);
+            for (int i = 0; i < cachedCols.size(); i++) {
+                String colName = cachedCols.get(i);
                 WalChange.ColumnValue col = colMap.get(colName);
                 if (col == null || col.isNull()) {
                     row.setField(i, null);
@@ -896,7 +1016,17 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                 }
             }
         } else {
-            // Fallback: assume WAL columns are in table order
+            // Fallback: assume WAL columns are in table order.
+            // Try to cache columns for this table on the fly.
+            try {
+                cacheTableColumns(tbl);
+                List<String> freshCols = cachedColumnsByTable.get(tbl);
+                if (freshCols != null && !freshCols.isEmpty()) {
+                    return convertWalColumnsToRowData(columns, tbl);
+                }
+            } catch (SQLException e) {
+                LOG.warn("Failed to cache columns for table {}.{} on the fly", schema, tbl, e);
+            }
             for (int i = 0; i < columns.size(); i++) {
                 WalChange.ColumnValue col = columns.get(i);
                 if (col.isNull()) {
@@ -908,6 +1038,146 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             }
         }
         return row;
+    }
+
+    /**
+     * Convert a WalChange to a single-column RowData containing a JSON string. Used in
+     * output.format=json mode for heterogeneous multi-table capture.
+     *
+     * <p>JSON format:
+     *
+     * <pre>
+     * {"table":"orders","schema":"public","op":"INSERT","lsn":"0/12345678",
+     *  "before":{},"after":{"id":1,"name":"Alice","amount":100.50}}
+     * </pre>
+     *
+     * @param change the WAL change event
+     * @return RowData with a single StringData field containing the JSON string
+     */
+    private RowData convertWalChangeToJson(WalChange change) {
+        StringBuilder sb = new StringBuilder(256);
+        sb.append('{');
+        // table
+        sb.append("\"table\":\"").append(escapeJson(change.getTable())).append('"');
+        // schema
+        sb.append(",\"schema\":\"").append(escapeJson(change.getSchema())).append('"');
+        // op
+        sb.append(",\"op\":\"").append(change.getType().name()).append('"');
+        // lsn
+        if (change.getLsn() != null) {
+            sb.append(",\"lsn\":\"").append(escapeJson(change.getLsn())).append('"');
+        }
+        // before (DELETE/UPDATE)
+        sb.append(",\"before\":");
+        appendColumnsAsJson(sb, change.getBeforeColumns());
+        // after (INSERT/UPDATE)
+        sb.append(",\"after\":");
+        appendColumnsAsJson(sb, change.getAfterColumns());
+        sb.append('}');
+
+        GenericRowData row = new GenericRowData(1);
+        row.setField(0, StringData.fromString(sb.toString()));
+        if (change.getType() == WalChange.ChangeType.DELETE) {
+            row.setRowKind(RowKind.DELETE);
+        }
+        return row;
+    }
+
+    /** Append a list of column values as a JSON object. */
+    private void appendColumnsAsJson(StringBuilder sb, List<WalChange.ColumnValue> columns) {
+        if (columns == null || columns.isEmpty()) {
+            sb.append("{}");
+            return;
+        }
+        sb.append('{');
+        for (int i = 0; i < columns.size(); i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            WalChange.ColumnValue col = columns.get(i);
+            sb.append('"').append(escapeJson(col.getColumnName())).append("\":");
+            if (col.isNull()) {
+                sb.append("null");
+            } else {
+                sb.append('"').append(escapeJson(col.getValue())).append('"');
+            }
+        }
+        sb.append('}');
+    }
+
+    /** Escape a string for safe inclusion in a JSON string value. */
+    private String escapeJson(String s) {
+        if (s == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(s.length() + 16);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"':
+                    sb.append("\\\"");
+                    break;
+                case '\\':
+                    sb.append("\\\\");
+                    break;
+                case '\n':
+                    sb.append("\\n");
+                    break;
+                case '\r':
+                    sb.append("\\r");
+                    break;
+                case '\t':
+                    sb.append("\\t");
+                    break;
+                default:
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Convert a snapshot ResultSet row to RowData, respecting output.format.
+     *
+     * <p>In raw mode: uses convertToRowDataDynamic (fixed columns). In json mode: wraps the row
+     * data into a JSON string with table name and op=INSERT.
+     */
+    private RowData convertSnapshotRow(ResultSet rs, ResultSetMetaData meta, String tbl)
+            throws SQLException {
+        if ("json".equalsIgnoreCase(outputFormat)) {
+            StringBuilder sb = new StringBuilder(256);
+            sb.append("{\"table\":\"").append(escapeJson(tbl)).append('"');
+            sb.append(",\"schema\":\"").append(escapeJson(schema)).append('"');
+            sb.append(",\"op\":\"INSERT\"");
+            sb.append(",\"before\":{}");
+            sb.append(",\"after\":");
+            // Append all columns as JSON
+            sb.append('{');
+            for (int i = 1; i <= meta.getColumnCount(); i++) {
+                if (i > 1) {
+                    sb.append(',');
+                }
+                String colName = meta.getColumnName(i);
+                sb.append('"').append(escapeJson(colName)).append("\":");
+                String val = rs.getString(i);
+                if (rs.wasNull()) {
+                    sb.append("null");
+                } else {
+                    sb.append('"').append(escapeJson(val)).append('"');
+                }
+            }
+            sb.append('}');
+            sb.append('}');
+            GenericRowData row = new GenericRowData(1);
+            row.setField(0, StringData.fromString(sb.toString()));
+            return row;
+        } else {
+            return convertToRowDataDynamic(rs, meta);
+        }
     }
 
     private Object convertColumnValueByOid(int typeOid, String value) {
@@ -1050,6 +1320,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         private boolean sendingBatch = false;
         private String sslMode = GaussDBCDCOptions.SSL_MODE.defaultValue();
         private Integer replicationPort;
+        private String outputFormat = "raw";
 
         public Builder hostname(String hostname) {
             this.hostname = hostname;
@@ -1148,6 +1419,11 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
         public Builder replicationPort(Integer replicationPort) {
             this.replicationPort = replicationPort;
+            return this;
+        }
+
+        public Builder outputFormat(String outputFormat) {
+            this.outputFormat = outputFormat;
             return this;
         }
 
