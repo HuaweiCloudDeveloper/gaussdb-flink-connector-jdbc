@@ -19,8 +19,10 @@
 package org.apache.flink.connector.gaussdbcdc.source;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
+import org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
@@ -31,7 +33,7 @@ import org.apache.flink.connector.gaussdbcdc.source.wal.WalReplicationStream;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
-import org.apache.flink.streaming.api.functions.source.RichSourceFunction;
+import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
 import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
@@ -49,11 +51,14 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
-import java.sql.Statement;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
+import java.util.TreeMap;
 import java.util.regex.Pattern;
 
 /**
@@ -85,8 +90,8 @@ import java.util.regex.Pattern;
  * </pre>
  */
 @PublicEvolving
-public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
-        implements CheckpointedFunction, ResultTypeQueryable<RowData> {
+public class GaussDBCDCSourceFunction extends RichParallelSourceFunction<RowData>
+        implements CheckpointedFunction, CheckpointListener, ResultTypeQueryable<RowData> {
 
     private static final long serialVersionUID = 1L;
     private static final Logger LOG = LoggerFactory.getLogger(GaussDBCDCSourceFunction.class);
@@ -116,7 +121,6 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private final String username;
     private final String password;
     private final String slotName;
-    private final String pluginName;
     private final boolean snapshotMode;
     private final int chunkSize;
     private final int connectTimeoutMs;
@@ -134,7 +138,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private final Integer replicationPort;
     /** Output format: "raw" (RowData, default) or "json" (single STRING column with JSON). */
     private final String outputFormat;
-    /** JSON sub-format when output.format=json: "debezium" (default), "canal", or "haier". */
+    /** JSON sub-format when output.format=json: "debezium" (default), "canal", or "he". */
     private final String outputJsonFormat;
 
     /** Compiled regex pattern for table-name matching. Null means exact match on tableName. */
@@ -143,6 +147,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     // Runtime state
     private transient volatile boolean running = true;
     private transient Connection connection;
+    private transient String identifierQuoteString;
     private transient WalReplicationStream walReplicationStream;
     private transient ChangeDataPoller changeDataPoller;
     private transient boolean walStreamInitialized = false;
@@ -155,10 +160,39 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     private transient String snapshotStartLsn = null;
     // Last consumed WAL LSN for duplicate filtering in SQL fallback mode
     private transient String lastConsumedLsn = null;
+    // LSN restored from Flink operator state. A restored source must resume from this position
+    // instead of taking a new snapshot and starting from the slot's current position.
+    private transient String restoredLsn = null;
     private transient int walEmitCount = 0;
 
     // Checkpoint state
     private transient ListState<String> offsetState;
+    private transient ListState<byte[]> pollingState;
+    private transient byte[] restoredPollingState;
+    private transient NavigableMap<Long, String> pendingCheckpointLsns;
+    private transient String lastAcknowledgedLsn;
+
+    // Database-backed snapshot coordination. Each source subtask owns a distinct advisory lock;
+    // subtask 0 uses an additional gate lock to form start/end barriers without external storage.
+    private transient int snapshotCoordinationKey;
+    private transient boolean snapshotCoordinationActive;
+    private transient boolean snapshotTransactionActive;
+    private transient long snapshotCsn = -1L;
+    private transient Map<Long, PendingWalTransaction> pendingWalTransactions;
+    private transient Deque<PendingWalTransaction> pendingWalTransactionOrder;
+    private transient String lastCommittedWalLsn;
+
+    private static final class PendingWalTransaction {
+        private final long xid;
+        private final List<WalChange> changes = new ArrayList<>();
+        private boolean committed;
+        private String commitLsn;
+        private long commitCsn;
+
+        private PendingWalTransaction(long xid) {
+            this.xid = xid;
+        }
+    }
 
     public GaussDBCDCSourceFunction(Builder builder) {
         this.hostname = builder.hostname;
@@ -169,7 +203,6 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         this.username = builder.username;
         this.password = builder.password;
         this.slotName = builder.slotName;
-        this.pluginName = builder.pluginName;
         this.snapshotMode = builder.snapshotMode;
         this.chunkSize = builder.chunkSize;
         this.connectTimeoutMs = builder.connectTimeoutMs;
@@ -183,6 +216,49 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         this.replicationPort = builder.replicationPort;
         this.outputFormat = builder.outputFormat;
         this.outputJsonFormat = builder.outputJsonFormat;
+        validateConfiguration();
+    }
+
+    private void validateConfiguration() {
+        if (!"raw".equalsIgnoreCase(outputFormat) && !"json".equalsIgnoreCase(outputFormat)) {
+            throw new IllegalArgumentException(
+                    "Unsupported output.format: "
+                            + outputFormat
+                            + ". Supported values are raw and json.");
+        }
+        if ("json".equalsIgnoreCase(outputFormat)
+                && !"debezium".equalsIgnoreCase(outputJsonFormat)
+                && !"canal".equalsIgnoreCase(outputJsonFormat)
+                && !"he".equalsIgnoreCase(outputJsonFormat)) {
+            throw new IllegalArgumentException(
+                    "Unsupported output.json.format: "
+                            + outputJsonFormat
+                            + ". Supported values are debezium, canal, and he.");
+        }
+        if (chunkSize <= 0) {
+            throw new IllegalArgumentException("chunk.size must be greater than zero");
+        }
+        if (connectTimeoutMs <= 0) {
+            throw new IllegalArgumentException("connect.timeout.ms must be greater than zero");
+        }
+        if (pollIntervalMs <= 0) {
+            throw new IllegalArgumentException("poll.interval.ms must be greater than zero");
+        }
+        if (parallelDecodeNum < 1 || parallelDecodeNum > 20) {
+            throw new IllegalArgumentException("parallel-decode-num must be between 1 and 20");
+        }
+        if (!"b".equalsIgnoreCase(decodeStyle)
+                && !"j".equalsIgnoreCase(decodeStyle)
+                && !"t".equalsIgnoreCase(decodeStyle)) {
+            throw new IllegalArgumentException("decode-style must be one of b, j, or t");
+        }
+    }
+
+    private String buildJdbcUrl() {
+        long timeoutSeconds = Math.max(1L, (connectTimeoutMs + 999L) / 1000L);
+        return String.format(
+                "jdbc:gaussdb://%s:%d/%s?sslmode=%s&connectTimeout=%d",
+                hostname, port, database, sslMode, timeoutSeconds);
     }
 
     @Override
@@ -191,10 +267,18 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         this.running = true; // transient field reset on deserialization, must re-initialize
         Class.forName("com.huawei.gaussdb.jdbc.Driver");
 
-        String url =
-                String.format(
-                        "jdbc:gaussdb://%s:%d/%s?sslmode=%s", hostname, port, database, sslMode);
+        String url = buildJdbcUrl();
         this.connection = DriverManager.getConnection(url, username, password);
+        this.identifierQuoteString = SqlIdentifierUtils.resolveQuoteString(connection);
+        this.pendingCheckpointLsns = new TreeMap<>();
+        this.lastAcknowledgedLsn = null;
+        this.snapshotCoordinationKey =
+                java.util.Objects.hash(database, schema, slotName, tableName);
+        this.snapshotCoordinationActive = false;
+        this.snapshotTransactionActive = false;
+        this.pendingWalTransactions = new HashMap<>();
+        this.pendingWalTransactionOrder = new ArrayDeque<>();
+        this.lastCommittedWalLsn = null;
 
         // Initialize multi-table structures
         this.cachedColumnsByTable = new HashMap<>();
@@ -219,7 +303,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                             parallelDecodeNum,
                             decodeStyle,
                             sendingBatch,
-                            1000,
+                            chunkSize,
                             replicationPort);
             if (replicationPort != null) {
                 LOG.info(
@@ -242,7 +326,18 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             }
             LOG.info("Discovered {} matching table(s): {}", matchedTables.size(), matchedTables);
             this.changeDataPoller =
-                    new ChangeDataPoller(connection, schema, matchedTables, outputFormat);
+                    new ChangeDataPoller(
+                            connection,
+                            database,
+                            schema,
+                            matchedTables,
+                            outputFormat,
+                            outputJsonFormat,
+                            chunkSize);
+            if (restoredPollingState != null) {
+                changeDataPoller.restoreState(restoredPollingState);
+                LOG.info("Restored polling CDC state from the latest completed checkpoint");
+            }
             LOG.info("Using polling-based CDC mode for {} table(s)", matchedTables.size());
         }
 
@@ -275,19 +370,58 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
     @Override
     public void run(SourceContext<RowData> ctx) throws Exception {
-        // Phase 1: Snapshot - read initial table data
-        if (snapshotMode) {
-            List<String> tables = discoverMatchingTables();
+        if (!running) {
+            return;
+        }
+        int subtaskIndex = getRuntimeContext().getIndexOfThisSubtask();
+        int sourceParallelism = getRuntimeContext().getNumberOfParallelSubtasks();
+
+        // Polling mode has one in-memory state store and cannot safely run one poller per subtask.
+        // Keep it single-active even when the surrounding job has a higher parallelism.
+        if (!walMode && subtaskIndex != 0) {
             LOG.info(
-                    "Starting snapshot phase for {} table(s) matching '{}': {}",
-                    tables.size(),
-                    tableName,
-                    tables);
-            for (String tbl : tables) {
-                readSnapshot(ctx, tbl);
-                LOG.info("Snapshot completed for table {}.{}", schema, tbl);
+                    "Polling source subtask {}/{} is idle; polling is handled by subtask 0",
+                    subtaskIndex,
+                    sourceParallelism);
+            return;
+        }
+
+        // Phase 1: Snapshot - read initial table data
+        boolean restoredSourceState = walMode ? restoredLsn != null : restoredPollingState != null;
+        if (snapshotMode && !restoredSourceState) {
+            List<String> tables = discoverMatchingTables();
+            boolean coordinatedSnapshot = walMode;
+            try {
+                if (coordinatedSnapshot) {
+                    beginCoordinatedSnapshot(tables);
+                }
+                LOG.info(
+                        "Starting snapshot phase for {} table(s) matching '{}': {}",
+                        tables.size(),
+                        tableName,
+                        tables);
+                for (String tbl : tables) {
+                    readSnapshot(ctx, tbl);
+                    LOG.info("Snapshot completed for table {}.{}", schema, tbl);
+                }
+                if (coordinatedSnapshot) {
+                    completeCoordinatedSnapshot();
+                }
+                LOG.info("Snapshot phase completed for all {} table(s)", tables.size());
+            } catch (Exception e) {
+                if (coordinatedSnapshot) {
+                    abortCoordinatedSnapshot();
+                }
+                throw e;
             }
-            LOG.info("Snapshot phase completed for all {} table(s)", tables.size());
+        } else if (snapshotMode) {
+            if (walMode) {
+                LOG.info(
+                        "Skipping snapshot after checkpoint restore; WAL will resume from LSN {}",
+                        restoredLsn);
+            } else {
+                LOG.info("Skipping snapshot after restoring polling CDC state");
+            }
         }
 
         // Phase 2: Streaming - continuously capture changes
@@ -297,8 +431,19 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                 runWalStreaming(ctx);
             } else {
                 LOG.info(
-                        "Subtask {} finished snapshot, WAL streaming handled by subtask 0",
+                        "Subtask {} finished snapshot; remaining active for checkpoints while WAL streaming is handled by subtask 0",
                         getRuntimeContext().getIndexOfThisSubtask());
+                // A bounded/finished source subtask makes subsequent streaming checkpoints fail
+                // with "task is closing". Keep snapshot-only subtasks alive so every parallel
+                // operator instance continues to acknowledge checkpoint barriers.
+                while (running) {
+                    try {
+                        Thread.sleep(Math.max(100L, pollIntervalMs));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
             }
         } else {
             runPollingStreaming(ctx);
@@ -307,31 +452,39 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
     /** Phase 1: Read initial snapshot via JDBC SELECT with parallel split support. */
     private void readSnapshot(SourceContext<RowData> ctx, String tbl) throws SQLException {
-        // Record WAL position BEFORE snapshot for diagnostics.
-        if (walMode) {
-            String preSnapshotLsn = getSlotConfirmedFlush();
-            LOG.info("Pre-snapshot WAL LSN: {}", preSnapshotLsn);
-        }
-
-        int subtaskIndex = getRuntimeContext().getIndexOfThisSubtask();
-        int numSubtasks = getRuntimeContext().getNumberOfParallelSubtasks();
+        boolean activePollingSource = !walMode && changeDataPoller != null;
+        int subtaskIndex = activePollingSource ? 0 : getRuntimeContext().getIndexOfThisSubtask();
+        int numSubtasks =
+                activePollingSource ? 1 : getRuntimeContext().getNumberOfParallelSubtasks();
         String columns = getTableColumns(tbl);
         String pkColumn = getPrimaryKeyColumn(tbl);
+        String quotedTable = qualifiedTable(tbl);
+        String quotedPkColumn = quoteIdentifier(pkColumn);
 
-        if (numSubtasks > 1) {
+        boolean rangeSplittable = numSubtasks > 1 && isNumericPrimaryKey(tbl, pkColumn);
+        if (numSubtasks > 1 && !rangeSplittable && subtaskIndex != 0) {
+            LOG.info(
+                    "Snapshot for {}.{} has a non-numeric primary key; subtask {} is idle while subtask 0 reads the table",
+                    schema,
+                    tbl,
+                    subtaskIndex);
+            return;
+        }
+
+        if (rangeSplittable) {
             // Parallel snapshot: each subtask reads a different id range
             long[] range = getIdRange(tbl, pkColumn);
             long minId = range[0];
             long maxId = range[1];
             long totalRange = maxId - minId + 1;
-            long chunkSize = totalRange / numSubtasks;
+            long rangeSize = totalRange / numSubtasks;
 
-            long startId = minId + (long) subtaskIndex * chunkSize;
+            long startId = minId + (long) subtaskIndex * rangeSize;
             long endId;
             if (subtaskIndex == numSubtasks - 1) {
                 endId = maxId;
             } else {
-                endId = minId + (long) (subtaskIndex + 1) * chunkSize - 1;
+                endId = minId + (long) (subtaskIndex + 1) * rangeSize - 1;
             }
 
             LOG.info(
@@ -345,11 +498,12 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
             String sql =
                     String.format(
-                            "SELECT %s FROM %s.%s WHERE %s >= ? AND %s <= ? ORDER BY %s",
-                            columns, schema, tbl, pkColumn, pkColumn, pkColumn);
+                            "SELECT %s FROM %s WHERE %s >= ? AND %s <= ? ORDER BY %s",
+                            columns, quotedTable, quotedPkColumn, quotedPkColumn, quotedPkColumn);
 
             int count = 0;
             try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+                stmt.setFetchSize(chunkSize);
                 stmt.setLong(1, startId);
                 stmt.setLong(2, endId);
                 try (ResultSet rs = stmt.executeQuery()) {
@@ -373,35 +527,419 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             // Single subtask: read all data
             String sql =
                     String.format(
-                            "SELECT %s FROM %s.%s ORDER BY %s", columns, schema, tbl, pkColumn);
+                            "SELECT %s FROM %s ORDER BY %s", columns, quotedTable, quotedPkColumn);
 
             int count = 0;
-            try (PreparedStatement stmt = connection.prepareStatement(sql);
-                    ResultSet rs = stmt.executeQuery()) {
-                ResultSetMetaData meta = rs.getMetaData();
-                while (rs.next()) {
-                    RowData row = convertSnapshotRow(rs, meta, tbl);
-                    synchronized (ctx.getCheckpointLock()) {
-                        ctx.collect(row);
+            try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+                stmt.setFetchSize(chunkSize);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    ResultSetMetaData meta = rs.getMetaData();
+                    while (rs.next()) {
+                        RowData row = convertSnapshotRow(rs, meta, tbl);
+                        synchronized (ctx.getCheckpointLock()) {
+                            ctx.collect(row);
+                        }
+                        count++;
                     }
-                    count++;
                 }
             }
             LOG.info("Snapshot read {} rows from {}.{}", count, schema, tbl);
         }
+    }
 
-        // Capture WAL position AFTER snapshot completes. This ensures the
-        // WAL stream starts from a position that is strictly after all
-        // data already captured by the snapshot, preventing duplicates.
-        if (walMode && getRuntimeContext().getIndexOfThisSubtask() == 0) {
-            snapshotStartLsn = getSlotConfirmedFlush();
-            LOG.info("Recorded post-snapshot WAL start LSN: {}", snapshotStartLsn);
+    private boolean isNumericPrimaryKey(String tbl, String pkColumn) throws SQLException {
+        DatabaseMetaData meta = connection.getMetaData();
+        try (ResultSet rs = meta.getColumns(null, schema, tbl, null)) {
+            while (rs.next()) {
+                if (!pkColumn.equalsIgnoreCase(rs.getString("COLUMN_NAME"))) {
+                    continue;
+                }
+                int type = rs.getInt("DATA_TYPE");
+                switch (type) {
+                    case java.sql.Types.TINYINT:
+                    case java.sql.Types.SMALLINT:
+                    case java.sql.Types.INTEGER:
+                    case java.sql.Types.BIGINT:
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Coordinate a non-blocking parallel snapshot using one exported GaussDB MVCC snapshot. */
+    private void beginCoordinatedSnapshot(List<String> tables) throws Exception {
+        int subtask = getRuntimeContext().getIndexOfThisSubtask();
+        int parallelism = getRuntimeContext().getNumberOfParallelSubtasks();
+        final int gateLock = -1;
+
+        if (subtask == 0) {
+            waitAndAcquireAdvisoryLock(gateLock);
+            snapshotStartLsn = walReplicationStream.prepareSlotForSnapshot();
+            SnapshotBoundary boundary = exportSnapshotBoundary();
+            snapshotCsn = boundary.csn;
+            publishSnapshotBoundary(boundary);
+            waitAndAcquireAdvisoryLock(subtask);
+            snapshotCoordinationActive = true;
+            waitForAllSnapshotSubtasks(parallelism);
+            LOG.info(
+                    "Parallel snapshot barrier ready: parallelism={}, tables={}, startLsn={}, snapshotCsn={}",
+                    parallelism,
+                    tables.size(),
+                    snapshotStartLsn,
+                    snapshotCsn);
+            releaseAdvisoryLock(gateLock);
+        } else {
+            waitForAdvisoryLockHeld(0);
+            SnapshotBoundary boundary = waitForPublishedSnapshotBoundary();
+            importSnapshotBoundary(boundary.snapshotId);
+            waitAndAcquireAdvisoryLock(subtask);
+            snapshotCoordinationActive = true;
+            waitForAdvisoryLockReleased(gateLock);
+        }
+    }
+
+    private void completeCoordinatedSnapshot() throws Exception {
+        int subtask = getRuntimeContext().getIndexOfThisSubtask();
+        int parallelism = getRuntimeContext().getNumberOfParallelSubtasks();
+
+        if (subtask == 0) {
+            // Keep the exporting transaction open until every reader has finished its imported
+            // snapshot. Business DML is never locked and continues using newer MVCC versions.
+            for (int i = 1; i < parallelism; i++) {
+                waitForAdvisoryLockReleased(i);
+            }
+            commitSnapshotTransaction();
+            releaseAdvisoryLock(0);
+        } else {
+            commitSnapshotTransaction();
+            releaseAdvisoryLock(subtask);
+        }
+        snapshotCoordinationActive = false;
+    }
+
+    private void abortCoordinatedSnapshot() {
+        try {
+            if (snapshotTransactionActive) {
+                connection.rollback();
+                snapshotTransactionActive = false;
+            }
+            if (connection != null && !connection.getAutoCommit()) {
+                connection.setAutoCommit(true);
+            }
+            clearPublishedSnapshotBoundary();
+        } catch (Exception e) {
+            LOG.warn("Failed to roll back coordinated snapshot transaction: {}", e.getMessage());
+        }
+        if (snapshotCoordinationActive) {
+            try {
+                releaseAdvisoryLock(getRuntimeContext().getIndexOfThisSubtask());
+                if (getRuntimeContext().getIndexOfThisSubtask() == 0) {
+                    releaseAdvisoryLock(-1);
+                }
+            } catch (Exception e) {
+                LOG.warn("Failed to release snapshot advisory locks: {}", e.getMessage());
+            }
+        }
+        snapshotCoordinationActive = false;
+    }
+
+    private SnapshotBoundary exportSnapshotBoundary() throws SQLException {
+        boolean combinedExportAvailable = isSnapshotFunctionAvailable("pg_export_snapshot_and_csn");
+        if (combinedExportAvailable) {
+            try {
+                return exportSnapshotAndCsnTogether();
+            } catch (SQLException combinedFailure) {
+                rollbackSnapshotExportAttempt(combinedFailure);
+                LOG.warn(
+                        "pg_export_snapshot_and_csn() failed; falling back to standard snapshot export: {}",
+                        combinedFailure.getMessage());
+            }
+        }
+
+        boolean currentCsnAvailable = isSnapshotFunctionAvailable("pg_current_csn");
+        beginSnapshotExportTransaction();
+        long csn = -1L;
+        if (currentCsnAvailable) {
+            try {
+                // Pin the REPEATABLE READ transaction snapshot before exporting it. Reading a
+                // moving current CSN after pg_export_snapshot() could include transactions that
+                // are not visible in the exported snapshot and cause data loss during filtering.
+                csn = queryCurrentCsn();
+            } catch (SQLException csnFailure) {
+                rollbackSnapshotExportAttempt(csnFailure);
+                LOG.warn(
+                        "pg_current_csn() failed; exporting a snapshot without CSN overlap filtering: {}",
+                        csnFailure.getMessage());
+                beginSnapshotExportTransaction();
+            }
+        }
+
+        String snapshotId = querySingleText("SELECT pg_catalog.pg_export_snapshot()");
+        if (csn < 0) {
+            LOG.warn(
+                    "GaussDB does not expose an atomic snapshot CSN; snapshot/WAL overlap filtering is disabled. "
+                            + "Recovery remains lossless but duplicate events may occur at the initial snapshot boundary.");
+        }
+        return new SnapshotBoundary(snapshotId, csn);
+    }
+
+    private SnapshotBoundary exportSnapshotAndCsnTogether() throws SQLException {
+        beginSnapshotExportTransaction();
+        try (PreparedStatement export =
+                        connection.prepareStatement(
+                                "SELECT * FROM pg_catalog.pg_export_snapshot_and_csn()");
+                ResultSet rs = export.executeQuery()) {
+            if (!rs.next()) {
+                throw new SQLException("pg_export_snapshot_and_csn() returned no row");
+            }
+            String snapshotId = rs.getString(1);
+            String csnText = rs.getString(2);
+            try {
+                return new SnapshotBoundary(snapshotId, Long.parseUnsignedLong(csnText, 16));
+            } catch (NumberFormatException e) {
+                throw new SQLException("Invalid hexadecimal snapshot CSN: " + csnText, e);
+            }
+        }
+    }
+
+    private void beginSnapshotExportTransaction() throws SQLException {
+        connection.setAutoCommit(false);
+        snapshotTransactionActive = true;
+        try (PreparedStatement isolation =
+                connection.prepareStatement("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")) {
+            isolation.execute();
+        }
+    }
+
+    private boolean isSnapshotFunctionAvailable(String functionName) {
+        String sql =
+                "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p "
+                        + "JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace "
+                        + "WHERE n.nspname = 'pg_catalog' AND p.proname = ? AND p.pronargs = 0)";
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setString(1, functionName);
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next() && rs.getBoolean(1);
+            }
+        } catch (SQLException e) {
+            LOG.warn(
+                    "Could not probe GaussDB function {}(); treating it as unavailable: {}",
+                    functionName,
+                    e.getMessage());
+            return false;
+        }
+    }
+
+    private long queryCurrentCsn() throws SQLException {
+        try (PreparedStatement stmt =
+                        connection.prepareStatement("SELECT pg_catalog.pg_current_csn()");
+                ResultSet rs = stmt.executeQuery()) {
+            if (!rs.next()) {
+                throw new SQLException("pg_current_csn() returned no row");
+            }
+            Object value = rs.getObject(1);
+            if (value instanceof Number) {
+                return ((Number) value).longValue();
+            }
+            if (value == null) {
+                throw new SQLException("pg_current_csn() returned null");
+            }
+            String text = value.toString().trim();
+            try {
+                if (text.startsWith("0x") || text.startsWith("0X")) {
+                    return Long.parseUnsignedLong(text.substring(2), 16);
+                }
+                if (text.matches(".*[A-Fa-f].*")) {
+                    return Long.parseUnsignedLong(text, 16);
+                }
+                return Long.parseUnsignedLong(text, 10);
+            } catch (NumberFormatException e) {
+                throw new SQLException("Invalid current CSN: " + text, e);
+            }
+        }
+    }
+
+    private String querySingleText(String sql) throws SQLException {
+        try (PreparedStatement stmt = connection.prepareStatement(sql);
+                ResultSet rs = stmt.executeQuery()) {
+            if (!rs.next()) {
+                throw new SQLException(sql + " returned no row");
+            }
+            String value = rs.getString(1);
+            if (value == null || value.isEmpty()) {
+                throw new SQLException(sql + " returned an empty value");
+            }
+            return value;
+        }
+    }
+
+    private void rollbackSnapshotExportAttempt(SQLException originalFailure) throws SQLException {
+        try {
+            connection.rollback();
+            snapshotTransactionActive = false;
+            connection.setAutoCommit(true);
+        } catch (SQLException rollbackFailure) {
+            originalFailure.addSuppressed(rollbackFailure);
+            throw originalFailure;
+        }
+    }
+
+    private void importSnapshotBoundary(String snapshotId) throws SQLException {
+        if (snapshotId == null || !snapshotId.matches("[0-9A-Fa-f-]+")) {
+            throw new SQLException("Invalid exported snapshot identifier: " + snapshotId);
+        }
+        connection.setAutoCommit(false);
+        snapshotTransactionActive = true;
+        try (PreparedStatement isolation =
+                        connection.prepareStatement(
+                                "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+                PreparedStatement importSnapshot =
+                        connection.prepareStatement(
+                                "SET TRANSACTION SNAPSHOT '" + snapshotId + "'")) {
+            isolation.execute();
+            importSnapshot.execute();
+        }
+    }
+
+    private void publishSnapshotBoundary(SnapshotBoundary boundary) throws SQLException {
+        String applicationName =
+                snapshotBoundaryPrefix()
+                        + boundary.snapshotId
+                        + ":"
+                        + Long.toHexString(boundary.csn).toUpperCase(java.util.Locale.ROOT);
+        try (PreparedStatement stmt =
+                connection.prepareStatement("SELECT set_config('application_name', ?, false)")) {
+            stmt.setString(1, applicationName);
+            stmt.execute();
+        }
+    }
+
+    private SnapshotBoundary waitForPublishedSnapshotBoundary() throws Exception {
+        String sql =
+                "SELECT application_name FROM pg_stat_activity "
+                        + "WHERE datname = current_database() AND usename = current_user "
+                        + "AND application_name LIKE ? ORDER BY backend_start DESC LIMIT 1";
+        while (running) {
+            try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+                stmt.setString(1, snapshotBoundaryPrefix() + "%");
+                try (ResultSet rs = stmt.executeQuery()) {
+                    if (rs.next()) {
+                        String value = rs.getString(1).substring(snapshotBoundaryPrefix().length());
+                        int separator = value.lastIndexOf(':');
+                        if (separator > 0) {
+                            return new SnapshotBoundary(
+                                    value.substring(0, separator),
+                                    Long.parseUnsignedLong(value.substring(separator + 1), 16));
+                        }
+                    }
+                }
+            }
+            Thread.sleep(50L);
+        }
+        throw new InterruptedException("Source cancelled while waiting for exported snapshot");
+    }
+
+    private void clearPublishedSnapshotBoundary() throws SQLException {
+        if (connection == null || connection.isClosed()) {
+            return;
+        }
+        try (PreparedStatement stmt =
+                connection.prepareStatement("SELECT set_config('application_name', '', false)")) {
+            stmt.execute();
+        }
+    }
+
+    private String snapshotBoundaryPrefix() {
+        return "flink_gdbc_" + Integer.toUnsignedString(snapshotCoordinationKey) + ":";
+    }
+
+    private void commitSnapshotTransaction() throws SQLException {
+        if (snapshotTransactionActive) {
+            connection.commit();
+            snapshotTransactionActive = false;
+        }
+        connection.setAutoCommit(true);
+    }
+
+    private void waitForAllSnapshotSubtasks(int parallelism) throws Exception {
+        for (int i = 1; i < parallelism; i++) {
+            waitForAdvisoryLockHeld(i);
+        }
+    }
+
+    private void waitForAdvisoryLockHeld(int lockId) throws Exception {
+        while (running) {
+            if (!tryAcquireAdvisoryLock(lockId)) {
+                return;
+            }
+            releaseAdvisoryLock(lockId);
+            Thread.sleep(50L);
+        }
+        throw new InterruptedException("Source cancelled while waiting for snapshot start barrier");
+    }
+
+    private void waitForAdvisoryLockReleased(int lockId) throws Exception {
+        while (running) {
+            if (tryAcquireAdvisoryLock(lockId)) {
+                releaseAdvisoryLock(lockId);
+                return;
+            }
+            Thread.sleep(50L);
+        }
+        throw new InterruptedException(
+                "Source cancelled while waiting for snapshot completion barrier");
+    }
+
+    private void waitAndAcquireAdvisoryLock(int lockId) throws Exception {
+        while (running) {
+            if (tryAcquireAdvisoryLock(lockId)) {
+                return;
+            }
+            Thread.sleep(50L);
+        }
+        throw new InterruptedException(
+                "Source cancelled while acquiring snapshot coordinator lock");
+    }
+
+    private boolean tryAcquireAdvisoryLock(int lockId) throws SQLException {
+        String sql = "SELECT pg_try_advisory_lock(?, ?)";
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setInt(1, snapshotCoordinationKey);
+            stmt.setInt(2, lockId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next() && rs.getBoolean(1);
+            }
+        }
+    }
+
+    private void releaseAdvisoryLock(int lockId) throws SQLException {
+        String sql = "SELECT pg_advisory_unlock(?, ?)";
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setInt(1, snapshotCoordinationKey);
+            stmt.setInt(2, lockId);
+            stmt.execute();
+        }
+    }
+
+    private static final class SnapshotBoundary {
+        private final String snapshotId;
+        private final long csn;
+
+        private SnapshotBoundary(String snapshotId, long csn) {
+            this.snapshotId = snapshotId;
+            this.csn = csn;
         }
     }
 
     /** Get the min and max id of the table for parallel split calculation. */
     private long[] getIdRange(String tbl, String pkCol) throws SQLException {
-        String sql = String.format("SELECT MIN(%s), MAX(%s) FROM %s.%s", pkCol, pkCol, schema, tbl);
+        String quotedPk = quoteIdentifier(pkCol);
+        String sql =
+                String.format(
+                        "SELECT MIN(%s), MAX(%s) FROM %s", quotedPk, quotedPk, qualifiedTable(tbl));
         try (PreparedStatement stmt = connection.prepareStatement(sql);
                 ResultSet rs = stmt.executeQuery()) {
             if (rs.next()) {
@@ -456,21 +994,31 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                 ResultSet pkRs = meta.getPrimaryKeys(null, schema, tbl);
                 if (pkRs != null) {
                     try (ResultSet rs = pkRs) {
-                        if (rs.next()) {
+                        List<String> pkColumns = new ArrayList<>();
+                        while (rs.next()) {
                             String pkName = rs.getString("COLUMN_NAME");
                             if (pkName != null && !pkName.isEmpty()) {
-                                LOG.info(
-                                        "Detected primary key column for {}.{}: {}",
-                                        schema,
-                                        tbl,
-                                        pkName);
-                                return pkName;
+                                pkColumns.add(pkName);
                             }
+                        }
+                        if (pkColumns.size() == 1) {
+                            LOG.info(
+                                    "Detected primary key column for {}.{}: {}",
+                                    schema,
+                                    tbl,
+                                    pkColumns.get(0));
+                            return pkColumns.get(0);
+                        }
+                        if (pkColumns.size() > 1) {
+                            throw unsupportedPrimaryKey(tbl, pkColumns);
                         }
                     }
                 }
             }
         } catch (SQLException e) {
+            if (isUnsupportedPrimaryKey(e)) {
+                throw e;
+            }
             LOG.warn("Failed to detect primary key for {}.{}: {}", schema, tbl, e.getMessage());
         }
         // Fallback: try pg_index query
@@ -480,25 +1028,39 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                     connection.prepareStatement(
                             "SELECT a.attname FROM pg_index i "
                                     + "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
-                                    + "WHERE i.indrelid = ?::regclass AND i.indisprimary LIMIT 1");
+                                    + "JOIN pg_class c ON c.oid = i.indrelid "
+                                    + "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                                    + "WHERE n.nspname = ? AND c.relname = ? AND i.indisprimary "
+                                    + "ORDER BY a.attnum");
             if (stmt == null) {
                 throw new SQLException("prepareStatement returned null");
             }
-            stmt.setString(1, schema + "." + tbl);
+            stmt.setString(1, schema);
+            stmt.setString(2, tbl);
             try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
+                List<String> pkColumns = new ArrayList<>();
+                while (rs.next()) {
                     String pkName = rs.getString(1);
                     if (pkName != null && !pkName.isEmpty()) {
-                        LOG.info(
-                                "Detected primary key column (pg_index) for {}.{}: {}",
-                                schema,
-                                tbl,
-                                pkName);
-                        return pkName;
+                        pkColumns.add(pkName);
                     }
+                }
+                if (pkColumns.size() == 1) {
+                    LOG.info(
+                            "Detected primary key column (pg_index) for {}.{}: {}",
+                            schema,
+                            tbl,
+                            pkColumns.get(0));
+                    return pkColumns.get(0);
+                }
+                if (pkColumns.size() > 1) {
+                    throw unsupportedPrimaryKey(tbl, pkColumns);
                 }
             }
         } catch (SQLException e) {
+            if (isUnsupportedPrimaryKey(e)) {
+                throw e;
+            }
             LOG.warn(
                     "pg_index primary key detection failed for {}.{}: {}",
                     schema,
@@ -512,9 +1074,23 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                 }
             }
         }
-        // Final fallback: "id" for backward compatibility
-        LOG.warn("No primary key found for {}.{}; falling back to \"id\"", schema, tbl);
-        return "id";
+        throw new SQLException(
+                "GaussDB CDC requires a primary key, but none was found for " + schema + "." + tbl);
+    }
+
+    private SQLException unsupportedPrimaryKey(String tbl, List<String> columns) {
+        return new SQLException(
+                "GaussDB CDC currently requires a single-column primary key for "
+                        + schema
+                        + "."
+                        + tbl
+                        + "; found composite key "
+                        + columns);
+    }
+
+    private boolean isUnsupportedPrimaryKey(SQLException e) {
+        return e.getMessage() != null
+                && e.getMessage().startsWith("GaussDB CDC currently requires a single-column");
     }
 
     /** Phase 2a: WAL streaming using WalReplicationStream. */
@@ -523,11 +1099,14 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             LOG.info("Initializing WAL replication stream for incremental phase");
             // Start WAL streaming from the snapshot start LSN to avoid
             // replaying data already emitted during the initial snapshot
-            if (snapshotStartLsn != null) {
+            String startLsn = restoredLsn != null ? restoredLsn : snapshotStartLsn;
+            if (startLsn != null) {
                 LOG.info(
-                        "Starting WAL stream from snapshot start LSN: {}, skipping already-snapshot data",
-                        snapshotStartLsn);
-                walReplicationStream.initialize(snapshotStartLsn);
+                        "Starting WAL stream from LSN: {} (source={})",
+                        startLsn,
+                        restoredLsn != null ? "checkpoint" : "snapshot");
+                walReplicationStream.initialize(startLsn);
+                lastConsumedLsn = startLsn;
             } else {
                 walReplicationStream.initialize();
             }
@@ -536,31 +1115,15 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                     "WAL stream initialized, starting from LSN: {}",
                     walReplicationStream.getLastLsn());
 
-            // The JDBC replication API may replay WAL data from the slot's
-            // existing position, which can be earlier than the snapshot LSN.
-            // Read and discard initial data to establish a consumed LSN watermark.
-            // This handles both JDBC Replication API and SQL function fallback.
-            try {
-                List<WalChange> discard = walReplicationStream.readChanges(10000);
-                if (!discard.isEmpty()) {
-                    LOG.info("Discarded {} stale WAL changes after snapshot", discard.size());
-                    WalChange first = discard.get(0);
-                    WalChange last = discard.get(discard.size() - 1);
-                    LOG.info("[DIAG] Discarded range: {} → {}", first.getLsn(), last.getLsn());
-                } else {
-                    LOG.info("[DIAG] No stale data to discard");
-                }
-                lastConsumedLsn = walReplicationStream.getLastLsn();
-                LOG.info("[DIAG] lastConsumedLsn = {}", lastConsumedLsn);
-            } catch (Exception e) {
-                LOG.warn("Failed to discard stale WAL data: {}", e.getMessage());
-            }
+            // Do not discard the first returned batch here. The slot was established before the
+            // snapshot and per-change LSN filtering removes records at or before that boundary. A
+            // blind first-batch discard drops legitimate changes committed during the snapshot.
         }
 
         LOG.info("Entering WAL streaming loop, running={}", running);
         while (running) {
             try {
-                List<WalChange> changes = walReplicationStream.readChanges(1000);
+                List<WalChange> changes = walReplicationStream.readChanges(chunkSize);
                 String streamLsn = walReplicationStream.getLastLsn();
                 if (!changes.isEmpty()) {
                     LOG.info(
@@ -570,93 +1133,109 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                             streamLsn);
                 }
 
-                for (WalChange change : changes) {
-                    if (!change.isDataChange()) {
-                        continue;
-                    }
+                List<WalChange> committedChanges = prepareCommittedWalChanges(changes);
+                String consumedLsn =
+                        walReplicationStream.isUseReplicationApi()
+                                ? streamLsn
+                                : lastCommittedWalLsn;
+                synchronized (ctx.getCheckpointLock()) {
+                    for (WalChange change : committedChanges) {
 
-                    // Filter out changes from non-target tables.
-                    // WAL logical decoding captures ALL changes in the database,
-                    // but we only want changes for tables matching the configured pattern.
-                    String changeSchema = change.getSchema();
-                    String changeTable = change.getTable();
-                    if (changeSchema == null || changeTable == null) {
-                        LOG.debug(
-                                "Skipping change with null schema/table: {}.{}",
-                                changeSchema,
-                                changeTable);
-                        continue;
-                    }
-                    if (!isTableMatch(changeSchema, changeTable)) {
-                        LOG.debug(
-                                "Skipping change from non-target table: {}.{}",
-                                changeSchema,
-                                changeTable);
-                        continue;
-                    }
+                        // Filter out changes from non-target tables.
+                        // WAL logical decoding captures ALL changes in the database,
+                        // but we only want changes for tables matching the configured pattern.
+                        String changeSchema = change.getSchema();
+                        String changeTable = change.getTable();
+                        if (changeSchema == null || changeTable == null) {
+                            LOG.debug(
+                                    "Skipping change with null schema/table: {}.{}",
+                                    changeSchema,
+                                    changeTable);
+                            continue;
+                        }
+                        if (!isTableMatch(changeSchema, changeTable)) {
+                            LOG.debug(
+                                    "Skipping change from non-target table: {}.{}",
+                                    changeSchema,
+                                    changeTable);
+                            continue;
+                        }
 
-                    // SQL fallback: skip changes at or before the last consumed LSN.
-                    // pg_logical_slot_peek_changes may return the same data
-                    // repeatedly if slot advancement is unavailable.
-                    if (lastConsumedLsn != null
-                            && change.getLsn() != null
-                            && !WalReplicationStream.isLsnNewer(change.getLsn(), lastConsumedLsn)) {
-                        LOG.info(
-                                "[DIAG] Filtered dup: change LSN={} <= lastConsumed={}, type={}, table={}",
-                                change.getLsn(),
-                                lastConsumedLsn,
-                                change.getType(),
-                                change.getTable());
-                        continue;
-                    }
-                    WalChange.ChangeType changeType = change.getType();
-                    RowData row = null;
-                    try {
-                        if ("json".equalsIgnoreCase(outputFormat)) {
-                            // JSON output mode: single STRING column with all data
-                            row = convertWalChangeToJson(change);
-                        } else {
-                            // Raw output mode: RowData with fixed columns per table
-                            if (changeType == WalChange.ChangeType.INSERT) {
-                                row =
-                                        convertWalColumnsToRowData(
-                                                change.getAfterColumns(), changeTable);
-                            } else if (changeType == WalChange.ChangeType.UPDATE) {
-                                row =
-                                        convertWalColumnsToRowData(
-                                                change.getAfterColumns(), changeTable);
-                            } else if (changeType == WalChange.ChangeType.DELETE) {
-                                row =
-                                        convertWalColumnsToRowData(
-                                                change.getBeforeColumns(), changeTable);
-                                if (row != null) {
-                                    row.setRowKind(RowKind.DELETE);
+                        // The replication API can replay individual WAL records from its start LSN.
+                        // SQL fallback is deduplicated at COMMIT granularity in
+                        // prepareCommittedWalChanges(): a transaction's data LSN may legitimately
+                        // be
+                        // older than lastConsumedLsn when its COMMIT arrives in a later read batch.
+                        if (walReplicationStream.isUseReplicationApi()
+                                && lastConsumedLsn != null
+                                && change.getLsn() != null
+                                && !WalReplicationStream.isLsnNewer(
+                                        change.getLsn(), lastConsumedLsn)) {
+                            LOG.info(
+                                    "[DIAG] Filtered dup: change LSN={} <= lastConsumed={}, type={}, table={}",
+                                    change.getLsn(),
+                                    lastConsumedLsn,
+                                    change.getType(),
+                                    change.getTable());
+                            continue;
+                        }
+                        WalChange.ChangeType changeType = change.getType();
+                        RowData row = null;
+                        try {
+                            if ("json".equalsIgnoreCase(outputFormat)) {
+                                // JSON output mode: single STRING column with all data
+                                row = convertWalChangeToJson(change);
+                            } else {
+                                // Raw output mode: RowData with fixed columns per table
+                                if (changeType == WalChange.ChangeType.INSERT) {
+                                    row =
+                                            convertWalColumnsToRowData(
+                                                    change.getAfterColumns(), changeTable);
+                                } else if (changeType == WalChange.ChangeType.UPDATE) {
+                                    row =
+                                            convertWalColumnsToRowData(
+                                                    change.getAfterColumns(), changeTable);
+                                } else if (changeType == WalChange.ChangeType.DELETE) {
+                                    row =
+                                            convertWalColumnsToRowData(
+                                                    change.getBeforeColumns(), changeTable);
+                                    if (row != null) {
+                                        row.setRowKind(RowKind.DELETE);
+                                    }
                                 }
                             }
+                        } catch (Exception e) {
+                            LOG.warn(
+                                    "Failed to convert WAL change on {}.{}: {}",
+                                    changeSchema,
+                                    changeTable,
+                                    e.getMessage());
+                            continue;
                         }
-                    } catch (Exception e) {
-                        LOG.warn(
-                                "Failed to convert WAL change on {}.{}: {}",
-                                changeSchema,
-                                changeTable,
-                                e.getMessage());
-                        continue;
+
+                        if (row != null) {
+                            ctx.collect(row);
+                            // Log first few emissions to correlate with LSN filter
+                            if (walEmitCount < 3) {
+                                LOG.info(
+                                        "[DIAG] Emitted #{}, type={}, LSN={}, row={}",
+                                        walEmitCount + 1,
+                                        changeType,
+                                        change.getLsn(),
+                                        row);
+                                walEmitCount++;
+                            }
+                        }
                     }
 
-                    if (row != null) {
-                        synchronized (ctx.getCheckpointLock()) {
-                            ctx.collect(row);
-                        }
-                        // Log first few emissions to correlate with LSN filter
-                        if (walEmitCount < 3) {
-                            LOG.info(
-                                    "[DIAG] Emitted #{}, type={}, LSN={}, row={}",
-                                    walEmitCount + 1,
-                                    changeType,
-                                    change.getLsn(),
-                                    row);
-                            walEmitCount++;
-                        }
+                    if (consumedLsn != null
+                            && (lastConsumedLsn == null
+                                    || WalReplicationStream.isLsnNewer(
+                                            consumedLsn, lastConsumedLsn))) {
+                        // Keep event emission and the corresponding source offset atomic with
+                        // Flink checkpoint snapshots. SQL fallback advances only through the
+                        // contiguous COMMIT prefix prepared above.
+                        lastConsumedLsn = consumedLsn;
                     }
                 }
 
@@ -686,6 +1265,125 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     }
 
     /**
+     * Return only transactionally committed SQL-fallback changes.
+     *
+     * <p>The logical slot is created immediately before exporting the MVCC snapshot. A transaction
+     * that commits between those two operations is therefore present in both the snapshot and WAL.
+     * GaussDB's exported CSN identifies exactly that overlap: transactions at or below the snapshot
+     * CSN are discarded, while later commits are emitted. Buffering until COMMIT also ensures that
+     * checkpoint offsets never split a transaction.
+     */
+    private List<WalChange> prepareCommittedWalChanges(List<WalChange> changes) {
+        if (changes.isEmpty() || walReplicationStream.isUseReplicationApi()) {
+            return changes;
+        }
+        if (pendingWalTransactions == null) {
+            pendingWalTransactions = new HashMap<>();
+        }
+        if (pendingWalTransactionOrder == null) {
+            pendingWalTransactionOrder = new ArrayDeque<>();
+        }
+
+        List<WalChange> committed = new ArrayList<>();
+        for (WalChange change : changes) {
+            if (change.getType() == WalChange.ChangeType.BEGIN) {
+                if (!pendingWalTransactions.containsKey(change.getXid())) {
+                    PendingWalTransaction transaction = new PendingWalTransaction(change.getXid());
+                    pendingWalTransactions.put(change.getXid(), transaction);
+                    pendingWalTransactionOrder.addLast(transaction);
+                }
+            } else if (change.isDataChange()) {
+                PendingWalTransaction transaction = pendingWalTransactions.get(change.getXid());
+                if (transaction == null) {
+                    // Keep compatibility with decoding formats that omit transaction markers,
+                    // while still preserving its order behind any unfinished transaction.
+                    transaction = new PendingWalTransaction(change.getXid());
+                    transaction.committed = true;
+                    transaction.commitLsn = change.getLsn();
+                    pendingWalTransactionOrder.addLast(transaction);
+                }
+                transaction.changes.add(change);
+                flushCommittedWalTransactions(committed);
+            } else if (change.getType() == WalChange.ChangeType.COMMIT) {
+                PendingWalTransaction transaction = pendingWalTransactions.get(change.getXid());
+                if (transaction == null) {
+                    LOG.debug(
+                            "COMMIT without buffered data (empty or replayed transaction): xid={}, lsn={}, pendingXids={}",
+                            change.getXid(),
+                            change.getLsn(),
+                            pendingWalTransactions.keySet());
+                    if (pendingWalTransactionOrder.isEmpty()) {
+                        advanceLastCommittedWalLsn(change.getLsn());
+                    }
+                    continue;
+                }
+                transaction.committed = true;
+                transaction.commitLsn = change.getLsn();
+                transaction.commitCsn = change.getCsn();
+                flushCommittedWalTransactions(committed);
+            }
+        }
+        return committed;
+    }
+
+    /**
+     * Release only the contiguous committed prefix of the decoded transaction stream.
+     *
+     * <p>GaussDB parallel logical decoding can return a later transaction's COMMIT while an older
+     * transaction is still incomplete. Emitting or checkpointing that later transaction would let
+     * recovery skip the older one. Keeping the ordered prefix here makes both event emission and
+     * the SQL slot watermark transaction-safe across read batches.
+     */
+    private void flushCommittedWalTransactions(List<WalChange> output) {
+        while (!pendingWalTransactionOrder.isEmpty()) {
+            PendingWalTransaction transaction = pendingWalTransactionOrder.peekFirst();
+            if (!transaction.committed) {
+                return;
+            }
+
+            pendingWalTransactionOrder.removeFirst();
+            pendingWalTransactions.remove(transaction.xid, transaction);
+
+            boolean replayedTransaction =
+                    lastConsumedLsn != null
+                            && transaction.commitLsn != null
+                            && !WalReplicationStream.isLsnNewer(
+                                    transaction.commitLsn, lastConsumedLsn);
+            boolean visibleInSnapshot =
+                    snapshotCsn >= 0
+                            && transaction.commitCsn > 0
+                            && transaction.commitCsn <= snapshotCsn;
+
+            if (visibleInSnapshot) {
+                LOG.info(
+                        "Discarding {} WAL changes already visible in snapshot: xid={}, commitLsn={}, commitCsn={}, snapshotCsn={}",
+                        transaction.changes.size(),
+                        transaction.xid,
+                        transaction.commitLsn,
+                        transaction.commitCsn,
+                        snapshotCsn);
+            } else if (replayedTransaction) {
+                LOG.debug(
+                        "Discarding replayed WAL transaction: xid={}, commitLsn={}, lastConsumedLsn={}",
+                        transaction.xid,
+                        transaction.commitLsn,
+                        lastConsumedLsn);
+            } else {
+                output.addAll(transaction.changes);
+            }
+            advanceLastCommittedWalLsn(transaction.commitLsn);
+        }
+    }
+
+    private void advanceLastCommittedWalLsn(String candidate) {
+        if (candidate != null
+                && (lastCommittedWalLsn == null
+                        || WalReplicationStream.isLsnNewer(candidate, lastCommittedWalLsn))) {
+            lastCommittedWalLsn = candidate;
+        }
+    }
+
+    /**
      * Reconnect to GaussDB and re-establish the WAL replication stream.
      *
      * <p>Called when the WAL streaming loop encounters a connection error (e.g. database restart).
@@ -694,11 +1392,13 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
      * duplicate data.
      */
     private void reconnectWalStream() throws Exception {
-        // Save the last known LSN before closing
-        String resumeLsn = walReplicationStream != null ? walReplicationStream.getLastLsn() : null;
+        String lastReadLsn =
+                walReplicationStream != null ? walReplicationStream.getLastLsn() : null;
         LOG.info(
-                "Reconnecting WAL stream, last known LSN: {}",
-                resumeLsn != null ? resumeLsn : "unknown");
+                "Reconnecting WAL stream, lastReadLsn={}, lastSafeLsn={}, lastAcknowledgedLsn={}",
+                lastReadLsn,
+                lastConsumedLsn,
+                lastAcknowledgedLsn);
 
         // Close old WAL stream (may be broken)
         if (walReplicationStream != null) {
@@ -724,11 +1424,15 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
         // Re-establish JDBC connection
         Class.forName("com.huawei.gaussdb.jdbc.Driver");
-        String url =
-                String.format(
-                        "jdbc:gaussdb://%s:%d/%s?sslmode=%s", hostname, port, database, sslMode);
+        String url = buildJdbcUrl();
         connection = DriverManager.getConnection(url, username, password);
+        identifierQuoteString = SqlIdentifierUtils.resolveQuoteString(connection);
         LOG.info("Reconnected JDBC to {}:{}/{}", hostname, port, database);
+
+        // A reconnect does not make a fixed Flink RowType capable of schema evolution. Verify the
+        // metadata instead of silently retaining stale column/PK positions or clearing the caches
+        // and emitting rows with a different arity.
+        validateCachedTableMetadataAfterReconnect();
 
         // Re-create WAL stream
         walReplicationStream =
@@ -742,17 +1446,20 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                         parallelDecodeNum,
                         decodeStyle,
                         sendingBatch,
-                        1000,
+                        chunkSize,
                         replicationPort);
 
-        // Resume from last known position.
-        // The slot already exists (was created on first run), so mppdb_decoding
-        // will NOT emit a snapshot — we'll only get changes since the slot position.
-        if (resumeLsn != null) {
-            walReplicationStream.initialize(resumeLsn);
-        } else {
-            walReplicationStream.initialize();
+        // Re-read from the database slot's checkpoint-acknowledged position. Advancing to the last
+        // record merely read by the broken connection can skip a BEGIN/DELETE whose COMMIT had not
+        // arrived yet. Replayed committed transactions are filtered at COMMIT against
+        // lastConsumedLsn.
+        if (pendingWalTransactions != null) {
+            pendingWalTransactions.clear();
         }
+        if (pendingWalTransactionOrder != null) {
+            pendingWalTransactionOrder.clear();
+        }
+        walReplicationStream.initialize();
 
         LOG.info(
                 "WAL stream re-initialized, starting from LSN: {}",
@@ -761,34 +1468,37 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
 
     /** Phase 2b: Polling-based streaming using ChangeDataPoller. */
     private void runPollingStreaming(SourceContext<RowData> ctx) throws Exception {
-        if (changeDataPoller != null) {
+        if (changeDataPoller != null && restoredPollingState == null) {
             changeDataPoller.loadSnapshot();
         }
 
         while (running) {
-            List<ChangeEvent<RowData>> events = changeDataPoller.pollAllChanges();
+            List<ChangeEvent<RowData>> events;
+            // Poller cursors/snapshots and emitted rows must move atomically relative to a Flink
+            // checkpoint. This may delay a checkpoint for the duration of one polling query, but it
+            // does not lock source tables or block business DML.
+            synchronized (ctx.getCheckpointLock()) {
+                events = changeDataPoller.pollAllChanges();
+                for (ChangeEvent<RowData> event : events) {
+                    RowData row = null;
+                    switch (event.getChangeType()) {
+                        case INSERT:
+                        case UPDATE:
+                            row = event.getAfter();
+                            break;
+                        case DELETE:
+                            row = event.getBefore();
+                            if (row instanceof GenericRowData) {
+                                ((GenericRowData) row).setRowKind(RowKind.DELETE);
+                            }
+                            LOG.debug("Detected DELETE event");
+                            break;
+                        case SNAPSHOT:
+                            row = event.getAfter();
+                            break;
+                    }
 
-            for (ChangeEvent<RowData> event : events) {
-                RowData row = null;
-                switch (event.getChangeType()) {
-                    case INSERT:
-                    case UPDATE:
-                        row = event.getAfter();
-                        break;
-                    case DELETE:
-                        row = event.getBefore();
-                        if (row instanceof GenericRowData) {
-                            ((GenericRowData) row).setRowKind(RowKind.DELETE);
-                        }
-                        LOG.debug("Detected DELETE event");
-                        break;
-                    case SNAPSHOT:
-                        row = event.getAfter();
-                        break;
-                }
-
-                if (row != null) {
-                    synchronized (ctx.getCheckpointLock()) {
+                    if (row != null) {
                         ctx.collect(row);
                     }
                 }
@@ -803,11 +1513,23 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     @Override
     public void cancel() {
         running = false;
+        if (snapshotCoordinationActive && connection != null) {
+            try {
+                // Closing the session immediately releases GaussDB session advisory/table locks
+                // and unblocks the remaining snapshot subtasks during task cancellation.
+                connection.close();
+            } catch (SQLException e) {
+                LOG.debug("Failed to close snapshot connection during cancellation", e);
+            }
+        }
     }
 
     @Override
     public void close() throws Exception {
         running = false;
+        if (snapshotCoordinationActive) {
+            abortCoordinatedSnapshot();
+        }
         if (walReplicationStream != null) {
             walReplicationStream.close();
         }
@@ -817,78 +1539,31 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         }
     }
 
-    /**
-     * Read the replication slot's confirmed_flush position as the starting LSN for WAL streaming
-     * after snapshot. This avoids replaying WAL changes that occurred before the slot was created
-     * (which are already captured by the initial snapshot query).
-     *
-     * <p>Uses the slot's confirmed_flush rather than WAL control functions like
-     * pg_current_wal_lsn(), because GaussDB standby nodes cannot execute WAL control functions.
-     */
-    private String getSlotConfirmedFlush() throws SQLException {
-        // Always prefer the current WAL position over the slot's
-        // confirmed_flush. confirmed_flush lags behind (it reflects the
-        // last position that was acknowledged by a previous CDC run), so
-        // using it would cause WAL to replay data that was written after
-        // the previous run ended, which the snapshot already captured.
-        //
-        // Try pg_current_wal_lsn() / pg_current_xlog_location() first
-        // (different GaussDB versions use different function names).
-        // Fall back to confirmed_flush only on standby nodes where WAL
-        // control functions are unavailable.
-        String[] walFuncs = {"SELECT pg_current_wal_lsn()", "SELECT pg_current_xlog_location()"};
-        for (String walFunc : walFuncs) {
-            try {
-                try (Statement stmt = connection.createStatement();
-                        ResultSet rs = stmt.executeQuery(walFunc)) {
-                    if (rs.next()) {
-                        String lsn = rs.getString(1);
-                        if (lsn != null && !lsn.isEmpty()) {
-                            LOG.info("Using {} as WAL start LSN: {}", walFunc, lsn);
-                            return lsn;
-                        }
-                    }
-                }
-            } catch (SQLException e) {
-                LOG.debug("{} failed: {}", walFunc, e.getMessage());
-            }
-        }
-
-        // Fallback: standby nodes cannot execute WAL control functions.
-        // Read the slot's confirmed_flush as the next best position.
-        String slotToCheck = slotName;
-        String sql = "SELECT confirmed_flush FROM pg_replication_slots WHERE slot_name = ?";
-        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
-            stmt.setString(1, slotToCheck);
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    String lsn = rs.getString("confirmed_flush");
-                    if (lsn != null && !lsn.isEmpty()) {
-                        LOG.info(
-                                "WAL functions unavailable, using slot confirmed_flush: {} (slot={})",
-                                lsn,
-                                slotToCheck);
-                        return lsn;
-                    }
-                }
-            }
-        }
-
-        LOG.warn("Could not determine WAL start position for slot '{}'", slotToCheck);
-        return null;
-    }
-
     // ---- CheckpointedFunction ----
 
     @Override
     public void snapshotState(FunctionSnapshotContext context) throws Exception {
         offsetState.clear();
+        if (pollingState != null) {
+            pollingState.clear();
+        }
         if (walReplicationStream != null && walStreamInitialized) {
-            String lsn = walReplicationStream.getLastLsn();
+            String lsn =
+                    lastConsumedLsn != null ? lastConsumedLsn : walReplicationStream.getLastLsn();
             if (lsn != null) {
                 offsetState.add(lsn);
+                if (pendingCheckpointLsns == null) {
+                    pendingCheckpointLsns = new TreeMap<>();
+                }
+                pendingCheckpointLsns.put(context.getCheckpointId(), lsn);
                 LOG.debug("Checkpointed LSN: {}", lsn);
             }
+        } else if (!walMode
+                && changeDataPoller != null
+                && pollingState != null
+                && getRuntimeContext().getIndexOfThisSubtask() == 0) {
+            pollingState.add(changeDataPoller.serializeState());
+            LOG.debug("Checkpointed polling CDC state");
         }
     }
 
@@ -896,13 +1571,58 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
     public void initializeState(FunctionInitializationContext context) throws Exception {
         ListStateDescriptor<String> descriptor =
                 new ListStateDescriptor<>("gaussdb-cdc-offset-state", Types.STRING);
-        offsetState = context.getOperatorStateStore().getListState(descriptor);
+        // Union state makes the single WAL offset available to the new subtask 0 after rescaling.
+        offsetState = context.getOperatorStateStore().getUnionListState(descriptor);
+        ListStateDescriptor<byte[]> pollingDescriptor =
+                new ListStateDescriptor<>(
+                        "gaussdb-cdc-polling-state",
+                        PrimitiveArrayTypeInfo.BYTE_PRIMITIVE_ARRAY_TYPE_INFO);
+        // Only polling subtask 0 writes this state. Union distribution guarantees that the new
+        // subtask 0 receives it after rescaling.
+        pollingState = context.getOperatorStateStore().getUnionListState(pollingDescriptor);
+        pendingCheckpointLsns = new TreeMap<>();
 
         if (context.isRestored()) {
-            // Restore LSN from checkpoint (for future use with LSN-based resumption)
             for (String lsn : offsetState.get()) {
+                restoredLsn = lsn;
                 LOG.info("Restored LSN from checkpoint: {}", lsn);
+                break;
             }
+            if (!walMode && pollingState != null) {
+                for (byte[] state : pollingState.get()) {
+                    restoredPollingState = state;
+                    LOG.info("Restored polling CDC state from checkpoint");
+                    break;
+                }
+            }
+        }
+    }
+
+    @Override
+    public void notifyCheckpointComplete(long checkpointId) throws Exception {
+        if (walReplicationStream == null
+                || !walStreamInitialized
+                || pendingCheckpointLsns == null) {
+            return;
+        }
+        Map.Entry<Long, String> completed = pendingCheckpointLsns.floorEntry(checkpointId);
+        if (completed != null) {
+            if (!completed.getValue().equals(lastAcknowledgedLsn)) {
+                walReplicationStream.acknowledgeLsn(completed.getValue());
+                lastAcknowledgedLsn = completed.getValue();
+                LOG.info(
+                        "Acknowledged WAL LSN {} after Flink checkpoint {} completed",
+                        completed.getValue(),
+                        checkpointId);
+            }
+            pendingCheckpointLsns.headMap(checkpointId, true).clear();
+        }
+    }
+
+    @Override
+    public void notifyCheckpointAborted(long checkpointId) {
+        if (pendingCheckpointLsns != null) {
+            pendingCheckpointLsns.remove(checkpointId);
         }
     }
 
@@ -964,6 +1684,12 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         if (cachedColumnsByTable.containsKey(tbl)) {
             return;
         }
+        List<String> colNames = loadTableColumnNames(tbl);
+        cachedColumnsByTable.put(tbl, colNames);
+        LOG.info("Cached {} columns for table {}.{}: {}", colNames.size(), schema, tbl, colNames);
+    }
+
+    private List<String> loadTableColumnNames(String tbl) throws SQLException {
         DatabaseMetaData meta = connection.getMetaData();
         List<String> colNames = new ArrayList<>();
         try (ResultSet rs = meta.getColumns(null, schema, tbl, null)) {
@@ -971,8 +1697,69 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
                 colNames.add(rs.getString("COLUMN_NAME"));
             }
         }
-        cachedColumnsByTable.put(tbl, colNames);
-        LOG.info("Cached {} columns for table {}.{}: {}", colNames.size(), schema, tbl, colNames);
+        return colNames;
+    }
+
+    private String identifierQuoteString() throws SQLException {
+        if (identifierQuoteString == null) {
+            identifierQuoteString = SqlIdentifierUtils.resolveQuoteString(connection);
+        }
+        return identifierQuoteString;
+    }
+
+    private String quoteIdentifier(String identifier) throws SQLException {
+        return SqlIdentifierUtils.quote(identifier, identifierQuoteString());
+    }
+
+    private String qualifiedTable(String tbl) throws SQLException {
+        return SqlIdentifierUtils.qualified(schema, tbl, identifierQuoteString());
+    }
+
+    private String quoteColumnList(List<String> columns) throws SQLException {
+        return SqlIdentifierUtils.columnList(columns, identifierQuoteString());
+    }
+
+    /**
+     * Fail explicitly when a reconnect observes a table definition different from the cached one.
+     */
+    private void validateCachedTableMetadataAfterReconnect() throws SQLException {
+        if (cachedColumnsByTable != null) {
+            for (Map.Entry<String, List<String>> entry : cachedColumnsByTable.entrySet()) {
+                List<String> freshColumns = loadTableColumnNames(entry.getKey());
+                if (!entry.getValue().equals(freshColumns)) {
+                    throw schemaEvolutionException(
+                            entry.getKey(),
+                            "columns changed from " + entry.getValue() + " to " + freshColumns);
+                }
+            }
+        }
+        if (cachedPkByTable != null) {
+            for (Map.Entry<String, String> entry : cachedPkByTable.entrySet()) {
+                String freshPk = detectPrimaryKeyColumn(entry.getKey());
+                if (!entry.getValue().equals(freshPk)) {
+                    throw schemaEvolutionException(
+                            entry.getKey(),
+                            "primary key changed from " + entry.getValue() + " to " + freshPk);
+                }
+            }
+        }
+    }
+
+    private SQLException schemaEvolutionException(String tbl, String detail) {
+        return new SQLException(
+                "Unsupported schema change detected for "
+                        + qualifiedTableForMessage(tbl)
+                        + " after WAL reconnect: "
+                        + detail
+                        + ". Cancel the job, update the Flink table schema, and restart it.");
+    }
+
+    private String qualifiedTableForMessage(String tbl) {
+        try {
+            return qualifiedTable(tbl);
+        } catch (SQLException ignored) {
+            return schema + "." + tbl;
+        }
     }
 
     private String getTableColumns(String tbl) throws SQLException {
@@ -984,7 +1771,7 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         if (cols == null || cols.isEmpty()) {
             throw new SQLException("No columns found for table " + schema + "." + tbl);
         }
-        return String.join(", ", cols);
+        return quoteColumnList(cols);
     }
 
     /**
@@ -1047,12 +1834,12 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
      * Convert a WalChange to a single-column RowData containing a JSON string. Used in
      * output.format=json mode for heterogeneous multi-table capture.
      *
-     * <p>JSON format (aligned with Haier CDC extraction structure):
+     * <p>Custom JSON format selected by {@code output.json.format=he}:
      *
      * <pre>
      * {
      *   "database": "event_driven",
-     *   "table": "haier_cbs_order_oper",
+     *   "table": "sample_order_oper",
      *   "optType": "INSERT",
      *   "pkNames": ["id"],
      *   "pkValues": "722253",
@@ -1070,8 +1857,8 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         String json;
         if ("canal".equalsIgnoreCase(outputJsonFormat)) {
             json = buildCanalJson(change);
-        } else if ("haier".equalsIgnoreCase(outputJsonFormat)) {
-            json = buildHaierJson(change);
+        } else if ("he".equalsIgnoreCase(outputJsonFormat)) {
+            json = buildCustomJson(change);
         } else {
             json = buildDebeziumJson(change);
         }
@@ -1183,15 +1970,15 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         return sb.toString();
     }
 
-    /** Build Haier customized Canal JSON format. */
-    private String buildHaierJson(WalChange change) {
+    /** Build the custom Canal-compatible JSON format. */
+    private String buildCustomJson(WalChange change) {
         StringBuilder sb = new StringBuilder(512);
         sb.append('{');
         // database
         sb.append("\"database\":\"").append(escapeJson(database)).append('"');
         // table
         sb.append(",\"table\":\"").append(escapeJson(change.getTable())).append('"');
-        // optType (haier uses optType instead of type)
+        // Custom envelope uses optType instead of Canal's type field.
         sb.append(",\"optType\":\"").append(change.getType().name()).append('"');
         // pkNames + pkValues
         String tbl = change.getTable();
@@ -1330,8 +2117,8 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             String json;
             if ("canal".equalsIgnoreCase(outputJsonFormat)) {
                 json = buildCanalSnapshotJson(rs, meta, tbl);
-            } else if ("haier".equalsIgnoreCase(outputJsonFormat)) {
-                json = buildHaierSnapshotJson(rs, meta, tbl);
+            } else if ("he".equalsIgnoreCase(outputJsonFormat)) {
+                json = buildCustomSnapshotJson(rs, meta, tbl);
             } else {
                 json = buildDebeziumSnapshotJson(rs, meta, tbl);
             }
@@ -1398,8 +2185,8 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         return sb.toString();
     }
 
-    /** Build Haier JSON for snapshot row (optType=INSERT). */
-    private String buildHaierSnapshotJson(ResultSet rs, ResultSetMetaData meta, String tbl)
+    /** Build custom JSON for a snapshot row (optType=INSERT). */
+    private String buildCustomSnapshotJson(ResultSet rs, ResultSetMetaData meta, String tbl)
             throws SQLException {
         String pkCol = null;
         if (cachedPkByTable != null) {
@@ -1585,7 +2372,6 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
         private String username;
         private String password;
         private String slotName = "flink_cdc_slot";
-        private String pluginName = "mppdb_decoding";
         private boolean snapshotMode = true;
         private int chunkSize = 1000;
         private int connectTimeoutMs = 30000;
@@ -1640,8 +2426,10 @@ public class GaussDBCDCSourceFunction extends RichSourceFunction<RowData>
             return this;
         }
 
+        /** @deprecated Use {@link #decodePlugin(String)}. */
+        @Deprecated
         public Builder pluginName(String pluginName) {
-            this.pluginName = pluginName;
+            this.decodePlugin = pluginName;
             return this;
         }
 

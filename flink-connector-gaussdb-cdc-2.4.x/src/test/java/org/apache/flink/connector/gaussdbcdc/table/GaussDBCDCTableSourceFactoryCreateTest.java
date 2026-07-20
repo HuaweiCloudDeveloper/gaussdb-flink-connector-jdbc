@@ -19,6 +19,7 @@
 package org.apache.flink.connector.gaussdbcdc.table;
 
 import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ObjectIdentifier;
@@ -26,6 +27,7 @@ import org.apache.flink.table.catalog.ResolvedCatalogTable;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.SourceFunctionProvider;
 import org.apache.flink.table.factories.DynamicTableFactory;
 
 import org.junit.jupiter.api.Test;
@@ -37,6 +39,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -52,7 +55,7 @@ class GaussDBCDCTableSourceFactoryCreateTest {
     }
 
     @Test
-    void testCreateDynamicTableSourceWithAllOptions() {
+    void testCreateDynamicTableSourceWithAllOptions() throws Exception {
         Map<String, String> options = createMinimalOptions();
         options.put("port", "9000");
         options.put("schema", "myschema");
@@ -69,6 +72,17 @@ class GaussDBCDCTableSourceFactoryCreateTest {
 
         DynamicTableSource source = createTableSource(options);
         assertThat(source).isInstanceOf(GaussDBCDCTableSource.class);
+        SourceFunctionProvider provider =
+                (SourceFunctionProvider)
+                        ((GaussDBCDCTableSource) source).getScanRuntimeProvider(null);
+        Object function = provider.createSourceFunction();
+        java.lang.reflect.Field chunkSize = function.getClass().getDeclaredField("chunkSize");
+        java.lang.reflect.Field connectTimeout =
+                function.getClass().getDeclaredField("connectTimeoutMs");
+        chunkSize.setAccessible(true);
+        connectTimeout.setAccessible(true);
+        assertThat(chunkSize.get(function)).isEqualTo(5000);
+        assertThat(connectTimeout.get(function)).isEqualTo(60000);
     }
 
     @Test
@@ -125,6 +139,41 @@ class GaussDBCDCTableSourceFactoryCreateTest {
     void testOptionalOptionsCount() {
         GaussDBCDCTableSourceFactory factory = new GaussDBCDCTableSourceFactory();
         assertThat(factory.optionalOptions()).hasSize(17);
+    }
+
+    @Test
+    void testRejectsUnsupportedOutputFormat() {
+        Map<String, String> options = createMinimalOptions();
+        options.put("output.format", "unexpected");
+
+        assertThatThrownBy(() -> createTableSource(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("output.format");
+    }
+
+    @Test
+    void testLegacyPluginNameAliasesDecodePlugin() throws Exception {
+        Map<String, String> options = createMinimalOptions();
+        options.put("plugin.name", "legacy_plugin");
+        GaussDBCDCTableSource source = (GaussDBCDCTableSource) createTableSource(options);
+        SourceFunctionProvider provider =
+                (SourceFunctionProvider) source.getScanRuntimeProvider(null);
+        Object function = provider.createSourceFunction();
+        java.lang.reflect.Field field = function.getClass().getDeclaredField("decodePlugin");
+        field.setAccessible(true);
+
+        assertThat(field.get(function)).isEqualTo("legacy_plugin");
+    }
+
+    @Test
+    void testRejectsConflictingPluginOptions() {
+        Map<String, String> options = createMinimalOptions();
+        options.put("plugin.name", "pgoutput");
+        options.put("decode.plugin", "mppdb_decoding");
+
+        assertThatThrownBy(() -> createTableSource(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Conflicting");
     }
 
     // ---- Helper methods ----

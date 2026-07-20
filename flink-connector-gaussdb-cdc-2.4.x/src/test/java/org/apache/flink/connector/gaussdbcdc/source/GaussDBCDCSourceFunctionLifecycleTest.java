@@ -24,6 +24,7 @@ import org.apache.flink.connector.gaussdbcdc.source.wal.WalChange;
 import org.apache.flink.connector.gaussdbcdc.source.wal.WalReplicationStream;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
+import org.apache.flink.streaming.api.functions.source.ParallelSourceFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.table.data.RowData;
 
@@ -37,6 +38,7 @@ import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -52,6 +54,7 @@ import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -98,6 +101,11 @@ class GaussDBCDCSourceFunctionLifecycleTest {
     }
 
     // ---- open() tests ----
+
+    @Test
+    void testSourceSupportsParallelExecution() {
+        assertThat(source).isInstanceOf(ParallelSourceFunction.class);
+    }
 
     @Test
     void testOpenWithPollingMode() throws Exception {
@@ -188,6 +196,123 @@ class GaussDBCDCSourceFunctionLifecycleTest {
         // With running=false immediately, run() should exit without snapshot
         noSnapshotSource.run(mockContext);
         // No exception means it skipped snapshot
+    }
+
+    @Test
+    void testExportSnapshotBoundaryUsesAtomicGaussDbFunction() throws Exception {
+        setField(source, "connection", mockConnection);
+        PreparedStatement probe = mockFunctionProbe(true);
+        when(mockConnection.prepareStatement(contains("FROM pg_catalog.pg_proc")))
+                .thenReturn(probe);
+
+        PreparedStatement isolation = mock(PreparedStatement.class);
+        PreparedStatement export = mock(PreparedStatement.class);
+        ResultSet exportResult = mock(ResultSet.class);
+        when(mockConnection.prepareStatement("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+                .thenReturn(isolation);
+        when(mockConnection.prepareStatement(
+                        "SELECT * FROM pg_catalog.pg_export_snapshot_and_csn()"))
+                .thenReturn(export);
+        when(export.executeQuery()).thenReturn(exportResult);
+        when(exportResult.next()).thenReturn(true);
+        when(exportResult.getString(1)).thenReturn("00000001-00000002-1");
+        when(exportResult.getString(2)).thenReturn("64");
+
+        Object boundary = invokeExportSnapshotBoundary(source);
+
+        assertThat(readBoundaryField(boundary, "snapshotId")).isEqualTo("00000001-00000002-1");
+        assertThat(readBoundaryField(boundary, "csn")).isEqualTo(100L);
+        verify(mockConnection).setAutoCommit(false);
+    }
+
+    @Test
+    void testExportSnapshotBoundaryFallsBackToStandardSnapshotAndCurrentCsn() throws Exception {
+        setField(source, "connection", mockConnection);
+        PreparedStatement combinedProbe = mockFunctionProbe(false);
+        PreparedStatement csnProbe = mockFunctionProbe(true);
+        when(mockConnection.prepareStatement(contains("FROM pg_catalog.pg_proc")))
+                .thenReturn(combinedProbe, csnProbe);
+
+        PreparedStatement isolation = mock(PreparedStatement.class);
+        PreparedStatement currentCsn = mock(PreparedStatement.class);
+        PreparedStatement export = mock(PreparedStatement.class);
+        ResultSet csnResult = mock(ResultSet.class);
+        ResultSet exportResult = mock(ResultSet.class);
+        when(mockConnection.prepareStatement("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+                .thenReturn(isolation);
+        when(mockConnection.prepareStatement("SELECT pg_catalog.pg_current_csn()"))
+                .thenReturn(currentCsn);
+        when(currentCsn.executeQuery()).thenReturn(csnResult);
+        when(csnResult.next()).thenReturn(true);
+        when(csnResult.getObject(1)).thenReturn(101L);
+        when(mockConnection.prepareStatement("SELECT pg_catalog.pg_export_snapshot()"))
+                .thenReturn(export);
+        when(export.executeQuery()).thenReturn(exportResult);
+        when(exportResult.next()).thenReturn(true);
+        when(exportResult.getString(1)).thenReturn("00000001-00000003-1");
+
+        Object boundary = invokeExportSnapshotBoundary(source);
+
+        assertThat(readBoundaryField(boundary, "snapshotId")).isEqualTo("00000001-00000003-1");
+        assertThat(readBoundaryField(boundary, "csn")).isEqualTo(101L);
+    }
+
+    @Test
+    void testExportSnapshotBoundaryDisablesCsnFilterWhenOnlyStandardFunctionExists()
+            throws Exception {
+        setField(source, "connection", mockConnection);
+        PreparedStatement combinedProbe = mockFunctionProbe(false);
+        PreparedStatement csnProbe = mockFunctionProbe(false);
+        when(mockConnection.prepareStatement(contains("FROM pg_catalog.pg_proc")))
+                .thenReturn(combinedProbe, csnProbe);
+
+        PreparedStatement isolation = mock(PreparedStatement.class);
+        PreparedStatement export = mock(PreparedStatement.class);
+        ResultSet exportResult = mock(ResultSet.class);
+        when(mockConnection.prepareStatement("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+                .thenReturn(isolation);
+        when(mockConnection.prepareStatement("SELECT pg_catalog.pg_export_snapshot()"))
+                .thenReturn(export);
+        when(export.executeQuery()).thenReturn(exportResult);
+        when(exportResult.next()).thenReturn(true);
+        when(exportResult.getString(1)).thenReturn("00000001-00000004-1");
+
+        Object boundary = invokeExportSnapshotBoundary(source);
+
+        assertThat(readBoundaryField(boundary, "snapshotId")).isEqualTo("00000001-00000004-1");
+        assertThat(readBoundaryField(boundary, "csn")).isEqualTo(-1L);
+    }
+
+    @Test
+    void testExportSnapshotBoundaryRollsBackFailedAtomicExportBeforeFallback() throws Exception {
+        setField(source, "connection", mockConnection);
+        PreparedStatement combinedProbe = mockFunctionProbe(true);
+        PreparedStatement csnProbe = mockFunctionProbe(false);
+        when(mockConnection.prepareStatement(contains("FROM pg_catalog.pg_proc")))
+                .thenReturn(combinedProbe, csnProbe);
+
+        PreparedStatement isolation = mock(PreparedStatement.class);
+        PreparedStatement combinedExport = mock(PreparedStatement.class);
+        PreparedStatement standardExport = mock(PreparedStatement.class);
+        ResultSet standardResult = mock(ResultSet.class);
+        when(mockConnection.prepareStatement("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+                .thenReturn(isolation);
+        when(mockConnection.prepareStatement(
+                        "SELECT * FROM pg_catalog.pg_export_snapshot_and_csn()"))
+                .thenReturn(combinedExport);
+        when(combinedExport.executeQuery()).thenThrow(new SQLException("function disappeared"));
+        when(mockConnection.prepareStatement("SELECT pg_catalog.pg_export_snapshot()"))
+                .thenReturn(standardExport);
+        when(standardExport.executeQuery()).thenReturn(standardResult);
+        when(standardResult.next()).thenReturn(true);
+        when(standardResult.getString(1)).thenReturn("00000001-00000005-1");
+
+        Object boundary = invokeExportSnapshotBoundary(source);
+
+        assertThat(readBoundaryField(boundary, "snapshotId")).isEqualTo("00000001-00000005-1");
+        assertThat(readBoundaryField(boundary, "csn")).isEqualTo(-1L);
+        verify(mockConnection).rollback();
+        verify(mockConnection).setAutoCommit(true);
     }
 
     // ---- readSnapshot() tests ----
@@ -284,6 +409,7 @@ class GaussDBCDCSourceFunctionLifecycleTest {
         method.invoke(source, mockContext);
 
         verify(mockContext, atLeastOnce()).collect(any(RowData.class));
+        assertThat(getField(source, "lastConsumedLsn", String.class)).isEqualTo("0/1");
     }
 
     @Test
@@ -351,6 +477,129 @@ class GaussDBCDCSourceFunctionLifecycleTest {
     }
 
     @Test
+    void testSqlWalTransactionAlreadyVisibleInSnapshotIsDiscarded() throws Exception {
+        WalReplicationStream walStream = mock(WalReplicationStream.class);
+        when(walStream.isUseReplicationApi()).thenReturn(false);
+        setField(source, "walReplicationStream", walStream);
+        setField(source, "snapshotCsn", 100L);
+
+        WalChange insert =
+                WalChange.insert(
+                        "0/11",
+                        7,
+                        "public",
+                        TABLE_NAME,
+                        Collections.singletonList(new WalChange.ColumnValue("id", 23, "1", false)));
+        WalChange commit = WalChange.commit("0/12", 7);
+        commit.setCsn(100L);
+
+        List<WalChange> committed =
+                prepareCommittedChanges(
+                        source,
+                        java.util.Arrays.asList(WalChange.begin("0/10", 7, 0), insert, commit));
+
+        assertThat(committed).isEmpty();
+        assertThat(getField(source, "lastCommittedWalLsn", String.class)).isEqualTo("0/12");
+    }
+
+    @Test
+    void testSqlWalTransactionAfterSnapshotIsEmittedAcrossReadBatches() throws Exception {
+        WalReplicationStream walStream = mock(WalReplicationStream.class);
+        when(walStream.isUseReplicationApi()).thenReturn(false);
+        setField(source, "walReplicationStream", walStream);
+        setField(source, "snapshotCsn", 100L);
+
+        WalChange insert =
+                WalChange.insert(
+                        "0/21",
+                        8,
+                        "public",
+                        TABLE_NAME,
+                        Collections.singletonList(new WalChange.ColumnValue("id", 23, "2", false)));
+        assertThat(
+                        prepareCommittedChanges(
+                                source,
+                                java.util.Arrays.asList(WalChange.begin("0/20", 8, 0), insert)))
+                .isEmpty();
+
+        WalChange commit = WalChange.commit("0/22", 8);
+        commit.setCsn(101L);
+        assertThat(prepareCommittedChanges(source, Collections.singletonList(commit)))
+                .containsExactly(insert);
+        assertThat(getField(source, "lastCommittedWalLsn", String.class)).isEqualTo("0/22");
+    }
+
+    @Test
+    void testSqlWalLaterCommitWaitsForEarlierCrossBatchTransaction() throws Exception {
+        WalReplicationStream walStream = mock(WalReplicationStream.class);
+        when(walStream.isUseReplicationApi()).thenReturn(false);
+        setField(source, "walReplicationStream", walStream);
+        setField(source, "snapshotCsn", -1L);
+
+        WalChange delete =
+                WalChange.delete(
+                        "0/11",
+                        7,
+                        "public",
+                        TABLE_NAME,
+                        Collections.singletonList(new WalChange.ColumnValue("id", 23, "1", false)));
+        assertThat(
+                        prepareCommittedChanges(
+                                source,
+                                java.util.Arrays.asList(WalChange.begin("0/10", 7, 0), delete)))
+                .isEmpty();
+
+        WalChange insert =
+                WalChange.insert(
+                        "0/21",
+                        8,
+                        "public",
+                        TABLE_NAME,
+                        Collections.singletonList(new WalChange.ColumnValue("id", 23, "2", false)));
+        WalChange insertCommit = WalChange.commit("0/22", 8);
+        insertCommit.setCsn(102L);
+        assertThat(
+                        prepareCommittedChanges(
+                                source,
+                                java.util.Arrays.asList(
+                                        WalChange.begin("0/20", 8, 0), insert, insertCommit)))
+                .isEmpty();
+        assertThat(getField(source, "lastCommittedWalLsn", String.class)).isNull();
+
+        WalChange deleteCommit = WalChange.commit("0/30", 7);
+        deleteCommit.setCsn(101L);
+        assertThat(prepareCommittedChanges(source, Collections.singletonList(deleteCommit)))
+                .containsExactly(delete, insert);
+        assertThat(getField(source, "lastCommittedWalLsn", String.class)).isEqualTo("0/30");
+    }
+
+    @Test
+    void testSqlWalDeduplicatesByCommitLsnNotDeleteDataLsn() throws Exception {
+        WalReplicationStream walStream = mock(WalReplicationStream.class);
+        when(walStream.isUseReplicationApi()).thenReturn(false);
+        setField(source, "walReplicationStream", walStream);
+        setField(source, "lastConsumedLsn", "0/15");
+
+        WalChange delete =
+                WalChange.delete(
+                        "0/11",
+                        9,
+                        "public",
+                        TABLE_NAME,
+                        Collections.singletonList(new WalChange.ColumnValue("id", 23, "1", false)));
+        WalChange commit = WalChange.commit("0/20", 9);
+        commit.setCsn(103L);
+
+        assertThat(
+                        prepareCommittedChanges(
+                                source,
+                                java.util.Arrays.asList(
+                                        WalChange.begin("0/10", 9, 0), delete, commit)))
+                .containsExactly(delete);
+        assertThat(getField(source, "lastCommittedWalLsn", String.class)).isEqualTo("0/20");
+    }
+
+    @Test
     void testRunWalStreamingWithDeleteChange() throws Exception {
         cacheTestTableColumns();
         WalReplicationStream walStream = mock(WalReplicationStream.class);
@@ -386,6 +635,16 @@ class GaussDBCDCSourceFunctionLifecycleTest {
         verify(mockContext, atLeastOnce()).collect(any(RowData.class));
     }
 
+    @SuppressWarnings("unchecked")
+    private static List<WalChange> prepareCommittedChanges(
+            GaussDBCDCSourceFunction source, List<WalChange> changes) throws Exception {
+        Method method =
+                GaussDBCDCSourceFunction.class.getDeclaredMethod(
+                        "prepareCommittedWalChanges", List.class);
+        method.setAccessible(true);
+        return (List<WalChange>) method.invoke(source, changes);
+    }
+
     @Test
     void testRunWalStreamingInitializeStream() throws Exception {
         WalReplicationStream walStream = mock(WalReplicationStream.class);
@@ -408,6 +667,7 @@ class GaussDBCDCSourceFunctionLifecycleTest {
         method.invoke(source, mockContext);
 
         verify(walStream).initialize();
+        verify(walStream, never()).readChanges(10000);
         assertThat(getField(source, "walStreamInitialized", boolean.class)).isTrue();
     }
 
@@ -602,6 +862,30 @@ class GaussDBCDCSourceFunctionLifecycleTest {
     }
 
     @Test
+    void testWalLsnAcknowledgedOnlyAfterCheckpointCompletes() throws Exception {
+        WalReplicationStream walStream = mock(WalReplicationStream.class);
+        setField(source, "walReplicationStream", walStream);
+        setField(source, "walStreamInitialized", true);
+        setField(source, "lastConsumedLsn", "0/20");
+
+        ListState<String> mockState = mock(ListState.class);
+        setField(source, "offsetState", mockState);
+        FunctionSnapshotContext snapshotContext = mock(FunctionSnapshotContext.class);
+        when(snapshotContext.getCheckpointId()).thenReturn(42L);
+
+        source.snapshotState(snapshotContext);
+        verify(walStream, never()).acknowledgeLsn(anyString());
+
+        source.notifyCheckpointComplete(42L);
+        verify(walStream).acknowledgeLsn("0/20");
+
+        when(snapshotContext.getCheckpointId()).thenReturn(43L);
+        source.snapshotState(snapshotContext);
+        source.notifyCheckpointComplete(43L);
+        verify(walStream, times(1)).acknowledgeLsn("0/20");
+    }
+
+    @Test
     void testSnapshotStateWithNullLsn() throws Exception {
         WalReplicationStream walStream = mock(WalReplicationStream.class);
         when(walStream.getLastLsn()).thenReturn(null);
@@ -648,10 +932,36 @@ class GaussDBCDCSourceFunctionLifecycleTest {
     }
 
     @Test
+    void testSnapshotStatePersistsPollingStateOnActiveSubtask() throws Exception {
+        ListState<String> offset = mock(ListState.class);
+        ListState<byte[]> polling = mock(ListState.class);
+        ChangeDataPoller poller = mock(ChangeDataPoller.class);
+        byte[] serialized = new byte[] {1, 2, 3};
+        when(poller.serializeState()).thenReturn(serialized);
+        setField(source, "offsetState", offset);
+        setField(source, "pollingState", polling);
+        setField(source, "changeDataPoller", poller);
+
+        org.apache.flink.api.common.functions.RuntimeContext runtimeContext =
+                mock(org.apache.flink.api.common.functions.RuntimeContext.class);
+        when(runtimeContext.getIndexOfThisSubtask()).thenReturn(0);
+        Field rtCtxField =
+                org.apache.flink.api.common.functions.AbstractRichFunction.class.getDeclaredField(
+                        "runtimeContext");
+        rtCtxField.setAccessible(true);
+        rtCtxField.set(source, runtimeContext);
+
+        source.snapshotState(mock(FunctionSnapshotContext.class));
+
+        verify(polling).clear();
+        verify(polling).add(serialized);
+    }
+
+    @Test
     void testInitializeStateNotRestored() throws Exception {
         OperatorStateStore stateStore = mock(OperatorStateStore.class);
         ListState<String> mockListState = mock(ListState.class);
-        org.mockito.Mockito.doReturn(mockListState).when(stateStore).getListState(any());
+        org.mockito.Mockito.doReturn(mockListState).when(stateStore).getUnionListState(any());
 
         FunctionInitializationContext initContext = mock(FunctionInitializationContext.class);
         when(initContext.isRestored()).thenReturn(false);
@@ -659,7 +969,7 @@ class GaussDBCDCSourceFunctionLifecycleTest {
 
         source.initializeState(initContext);
 
-        verify(stateStore).getListState(any());
+        verify(stateStore, times(2)).getUnionListState(any());
         assertThat(getField(source, "offsetState", ListState.class)).isNotNull();
     }
 
@@ -667,11 +977,15 @@ class GaussDBCDCSourceFunctionLifecycleTest {
     void testInitializeStateRestoredWithLsn() throws Exception {
         OperatorStateStore stateStore = mock(OperatorStateStore.class);
         ListState<String> mockListState = mock(ListState.class);
-        org.mockito.Mockito.doReturn(mockListState).when(stateStore).getListState(any());
+        ListState<byte[]> mockPollingState = mock(ListState.class);
+        org.mockito.Mockito.doReturn(mockListState, mockPollingState)
+                .when(stateStore)
+                .getUnionListState(any());
 
         List<String> restoredLsns = new ArrayList<>();
         restoredLsns.add("0/15A3B");
         when(mockListState.get()).thenReturn(restoredLsns);
+        when(mockPollingState.get()).thenReturn(Collections.emptyList());
 
         FunctionInitializationContext initContext = mock(FunctionInitializationContext.class);
         when(initContext.isRestored()).thenReturn(true);
@@ -680,6 +994,7 @@ class GaussDBCDCSourceFunctionLifecycleTest {
         source.initializeState(initContext);
 
         verify(mockListState).get();
+        assertThat(getField(source, "restoredLsn", String.class)).isEqualTo("0/15A3B");
     }
 
     // ---- convertToRowDataDynamic extended tests ----
@@ -922,12 +1237,21 @@ class GaussDBCDCSourceFunctionLifecycleTest {
         when(columnsRs.getString("COLUMN_NAME")).thenReturn("id", "name");
 
         setField(source, "connection", mockConnection);
+        Map<String, String> cachedPk = new HashMap<>();
+        cachedPk.put(TABLE_NAME, "id");
+        setField(source, "cachedPkByTable", cachedPk);
 
         if (numSubtasks > 1) {
+            ResultSet typeRs = mock(ResultSet.class);
+            when(dbMeta.getColumns(null, "public", "test_table", null))
+                    .thenReturn(columnsRs, typeRs);
+            when(typeRs.next()).thenReturn(true);
+            when(typeRs.getString("COLUMN_NAME")).thenReturn("id");
+            when(typeRs.getInt("DATA_TYPE")).thenReturn(Types.INTEGER);
             // Mock getIdRange
             PreparedStatement idRangeStmt = mock(PreparedStatement.class);
             ResultSet idRangeRs = mock(ResultSet.class);
-            when(mockConnection.prepareStatement(contains("MIN(id)"))).thenReturn(idRangeStmt);
+            when(mockConnection.prepareStatement(contains("MIN(\"id\")"))).thenReturn(idRangeStmt);
             when(idRangeStmt.executeQuery()).thenReturn(idRangeRs);
             when(idRangeRs.next()).thenReturn(true);
             when(idRangeRs.getLong(1)).thenReturn(1L);
@@ -937,7 +1261,8 @@ class GaussDBCDCSourceFunctionLifecycleTest {
             // Mock SELECT with WHERE
             PreparedStatement selectStmt = mock(PreparedStatement.class);
             ResultSet selectRs = mock(ResultSet.class);
-            when(mockConnection.prepareStatement(contains("WHERE id >= ?"))).thenReturn(selectStmt);
+            when(mockConnection.prepareStatement(contains("WHERE \"id\" >= ?")))
+                    .thenReturn(selectStmt);
             when(selectStmt.executeQuery()).thenReturn(selectRs);
             when(selectRs.next()).thenReturn(true, false);
 
@@ -953,7 +1278,8 @@ class GaussDBCDCSourceFunctionLifecycleTest {
             // Single subtask: SELECT without WHERE
             PreparedStatement selectStmt = mock(PreparedStatement.class);
             ResultSet selectRs = mock(ResultSet.class);
-            when(mockConnection.prepareStatement(contains("ORDER BY id"))).thenReturn(selectStmt);
+            when(mockConnection.prepareStatement(contains("ORDER BY \"id\"")))
+                    .thenReturn(selectStmt);
             when(selectStmt.executeQuery()).thenReturn(selectRs);
             when(selectRs.next()).thenReturn(true, false);
 
@@ -988,11 +1314,19 @@ class GaussDBCDCSourceFunctionLifecycleTest {
         when(columnsRs.getString("COLUMN_NAME")).thenReturn("id", "name");
 
         setField(source, "connection", mockConnection);
+        Map<String, String> cachedPk = new HashMap<>();
+        cachedPk.put(TABLE_NAME, "id");
+        setField(source, "cachedPkByTable", cachedPk);
+        ResultSet typeRs = mock(ResultSet.class);
+        when(dbMeta.getColumns(null, "public", "test_table", null)).thenReturn(columnsRs, typeRs);
+        when(typeRs.next()).thenReturn(true);
+        when(typeRs.getString("COLUMN_NAME")).thenReturn("id");
+        when(typeRs.getInt("DATA_TYPE")).thenReturn(Types.INTEGER);
 
         // Empty table - getIdRange returns [0, -1]
         PreparedStatement idRangeStmt = mock(PreparedStatement.class);
         ResultSet idRangeRs = mock(ResultSet.class);
-        when(mockConnection.prepareStatement(contains("MIN(id)"))).thenReturn(idRangeStmt);
+        when(mockConnection.prepareStatement(contains("MIN(\"id\")"))).thenReturn(idRangeStmt);
         when(idRangeStmt.executeQuery()).thenReturn(idRangeRs);
         when(idRangeRs.next()).thenReturn(true);
         when(idRangeRs.getLong(1)).thenReturn(0L);
@@ -1002,9 +1336,31 @@ class GaussDBCDCSourceFunctionLifecycleTest {
         // SELECT with WHERE (empty results)
         PreparedStatement selectStmt = mock(PreparedStatement.class);
         ResultSet selectRs = mock(ResultSet.class);
-        when(mockConnection.prepareStatement(contains("WHERE id >= ?"))).thenReturn(selectStmt);
+        when(mockConnection.prepareStatement(contains("WHERE \"id\" >= ?"))).thenReturn(selectStmt);
         when(selectStmt.executeQuery()).thenReturn(selectRs);
         when(selectRs.next()).thenReturn(false);
+    }
+
+    private static PreparedStatement mockFunctionProbe(boolean available) throws Exception {
+        PreparedStatement probe = mock(PreparedStatement.class);
+        ResultSet result = mock(ResultSet.class);
+        when(probe.executeQuery()).thenReturn(result);
+        when(result.next()).thenReturn(true);
+        when(result.getBoolean(1)).thenReturn(available);
+        return probe;
+    }
+
+    private static Object invokeExportSnapshotBoundary(GaussDBCDCSourceFunction target)
+            throws Exception {
+        Method method = GaussDBCDCSourceFunction.class.getDeclaredMethod("exportSnapshotBoundary");
+        method.setAccessible(true);
+        return method.invoke(target);
+    }
+
+    private static Object readBoundaryField(Object boundary, String fieldName) throws Exception {
+        Field field = boundary.getClass().getDeclaredField(fieldName);
+        field.setAccessible(true);
+        return field.get(boundary);
     }
 
     private static void setField(Object target, String fieldName, Object value) throws Exception {

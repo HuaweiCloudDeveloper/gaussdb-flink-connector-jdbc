@@ -28,14 +28,21 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.TestMethodOrder;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Properties;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assumptions.assumeThat;
@@ -63,19 +70,75 @@ import static org.assertj.core.api.Assumptions.assumeThat;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class GaussDBCDCSourceFunctionITCase {
 
-    private static final String HOST = "1.92.120.69";
-    private static final int PORT = 8000;
-    private static final String DATABASE = "test";
-    private static final String USERNAME = "root";
-    private static final String PASSWORD = "GuassDB123";
-    private static final String SCHEMA = "public";
-    private static final String TEST_TABLE = "flink_cdc_sf_it_test";
+    private static final Properties SYSTEM_PROPERTIES = System.getProperties();
+    private static final String HOST = SYSTEM_PROPERTIES.getProperty("gaussdb.host", "localhost");
+    private static final int PORT =
+            Integer.parseInt(SYSTEM_PROPERTIES.getProperty("gaussdb.port", "8000"));
+    private static final String DATABASE =
+            SYSTEM_PROPERTIES.getProperty("gaussdb.database", "test");
+    private static final String USERNAME =
+            SYSTEM_PROPERTIES.getProperty("gaussdb.username", "root");
+    private static final String PASSWORD = SYSTEM_PROPERTIES.getProperty("gaussdb.password", "");
+    private static final String SCHEMA = SYSTEM_PROPERTIES.getProperty("gaussdb.schema", "public");
+    private static final String TEST_TABLE =
+            SYSTEM_PROPERTIES.getProperty("gaussdb.table", "flink_cdc_sf_it_test");
 
     private Connection connection;
 
+    @Test
+    void testPollingUsesPrimaryKeyTieBreakerForSameTimestamp() throws Exception {
+        String table = "flink_cdc_sf_it_polling_cursor";
+        String qualified = SCHEMA + "." + table;
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute("DROP TABLE IF EXISTS " + qualified);
+            stmt.execute(
+                    "CREATE TABLE "
+                            + qualified
+                            + " (code VARCHAR(32) PRIMARY KEY, value_col VARCHAR(64), updated_at TIMESTAMP)");
+            stmt.execute(
+                    "INSERT INTO "
+                            + qualified
+                            + " VALUES ('A', 'before-a', '2026-01-01 00:00:00'),"
+                            + " ('B', 'before-b', '2026-01-01 00:00:00'),"
+                            + " ('C', 'before-c', '2026-01-01 00:00:00')");
+        }
+
+        try {
+            ChangeDataPoller poller =
+                    new ChangeDataPoller(
+                            connection,
+                            DATABASE,
+                            SCHEMA,
+                            Collections.singletonList(table),
+                            "raw",
+                            "debezium",
+                            2);
+            poller.loadSnapshot();
+
+            try (PreparedStatement update =
+                    connection.prepareStatement(
+                            "UPDATE " + qualified + " SET value_col = 'after', updated_at = ?")) {
+                update.setTimestamp(1, Timestamp.valueOf("2026-01-02 00:00:00"));
+                assertThat(update.executeUpdate()).isEqualTo(3);
+            }
+
+            assertThat(poller.pollUpdates()).hasSize(2);
+            assertThat(poller.pollUpdates()).hasSize(1);
+            assertThat(poller.pollUpdates()).isEmpty();
+            System.out.println(
+                    "[OK] Polling cursor emitted all same-timestamp rows across batch boundary");
+        } finally {
+            try (Statement stmt = connection.createStatement()) {
+                stmt.execute("DROP TABLE IF EXISTS " + qualified);
+            }
+        }
+    }
+
     @BeforeAll
     void setUp() throws Exception {
-        assumeThat(Boolean.getBoolean("gaussdb.test.enabled"))
+        assumeThat(
+                        Boolean.parseBoolean(
+                                SYSTEM_PROPERTIES.getProperty("gaussdb.test.enabled", "false")))
                 .as("GaussDB integration test disabled - set -Dgaussdb.test.enabled=true")
                 .isTrue();
 
@@ -119,7 +182,7 @@ class GaussDBCDCSourceFunctionITCase {
             stmt.execute(String.format("DROP TABLE IF EXISTS %s.%s", SCHEMA, TEST_TABLE));
             stmt.execute(
                     String.format(
-                            "CREATE TABLE %s.%s (id SERIAL PRIMARY KEY, name VARCHAR(100), age INT)",
+                            "CREATE TABLE %s.%s (id BIGINT PRIMARY KEY, name VARCHAR(100), age INT)",
                             SCHEMA, TEST_TABLE));
         }
     }
@@ -236,7 +299,7 @@ class GaussDBCDCSourceFunctionITCase {
         try (Statement stmt = connection.createStatement()) {
             stmt.execute(
                     String.format(
-                            "INSERT INTO %s.%s (name, age) VALUES ('Charlie', 35)",
+                            "INSERT INTO %s.%s (id, name, age) VALUES (1, 'Charlie', 35)",
                             SCHEMA, TEST_TABLE));
         }
 
@@ -317,7 +380,7 @@ class GaussDBCDCSourceFunctionITCase {
         try (Statement stmt = connection.createStatement()) {
             stmt.execute(
                     String.format(
-                            "INSERT INTO %s.%s (name, age) VALUES ('Diana', 28)",
+                            "INSERT INTO %s.%s (id, name, age) VALUES (2, 'Diana', 28)",
                             SCHEMA, TEST_TABLE));
             stmt.execute(
                     String.format(
@@ -386,7 +449,7 @@ class GaussDBCDCSourceFunctionITCase {
         try (Statement stmt = connection.createStatement()) {
             stmt.execute(
                     String.format(
-                            "INSERT INTO %s.%s (name, age) VALUES ('Eve', 22)",
+                            "INSERT INTO %s.%s (id, name, age) VALUES (3, 'Eve', 22)",
                             SCHEMA, TEST_TABLE));
         }
 
@@ -475,7 +538,7 @@ class GaussDBCDCSourceFunctionITCase {
         try (Statement stmt = connection.createStatement()) {
             stmt.execute(
                     String.format(
-                            "INSERT INTO %s.%s (name, age) VALUES ('Frank', 40)",
+                            "INSERT INTO %s.%s (id, name, age) VALUES (4, 'Frank', 40)",
                             SCHEMA, TEST_TABLE));
         }
 
@@ -518,7 +581,7 @@ class GaussDBCDCSourceFunctionITCase {
         try (Statement stmt = connection.createStatement()) {
             stmt.execute(
                     String.format(
-                            "INSERT INTO %s.%s (name, age) VALUES ('Grace', 33)",
+                            "INSERT INTO %s.%s (id, name, age) VALUES (5, 'Grace', 33)",
                             SCHEMA, TEST_TABLE));
         }
 
@@ -633,7 +696,7 @@ class GaussDBCDCSourceFunctionITCase {
         try (Statement stmt = connection.createStatement()) {
             stmt.execute(
                     String.format(
-                            "INSERT INTO %s.%s (name, age) VALUES ('Heidi', 27)",
+                            "INSERT INTO %s.%s (id, name, age) VALUES (6, 'Heidi', 27)",
                             SCHEMA, TEST_TABLE));
         }
 
@@ -661,7 +724,7 @@ class GaussDBCDCSourceFunctionITCase {
         try (Statement stmt = connection.createStatement()) {
             stmt.execute(
                     String.format(
-                            "INSERT INTO %s.%s (name, age) VALUES ('Ivan', 32)",
+                            "INSERT INTO %s.%s (id, name, age) VALUES (7, 'Ivan', 32)",
                             SCHEMA, TEST_TABLE));
         }
 
@@ -687,7 +750,337 @@ class GaussDBCDCSourceFunctionITCase {
         System.out.println("[OK] MppdbBinaryDecoder integration verified");
     }
 
+    // ---- Test 11: Snapshot/WAL handoff ----
+
+    @Test
+    @org.junit.jupiter.api.Order(11)
+    void testSlotPreparedBeforeSnapshotRetainsChange() throws Exception {
+        String slotName = "sf_it_handoff";
+        dropSlotIfExists(slotName);
+
+        String jdbcUrl = String.format("jdbc:gaussdb://%s:%d/%s", HOST, PORT, DATABASE);
+        WalReplicationStream stream =
+                new WalReplicationStream(
+                        connection,
+                        jdbcUrl,
+                        USERNAME,
+                        PASSWORD,
+                        slotName,
+                        "mppdb_decoding",
+                        4,
+                        "b",
+                        true,
+                        1000);
+
+        String snapshotStartLsn = stream.prepareSlotForSnapshot();
+        assertThat(snapshotStartLsn).isNotBlank();
+
+        // This commit represents a change made while the JDBC snapshot is still running.
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute(
+                    String.format(
+                            "INSERT INTO %s.%s (id, name, age) VALUES (8, 'Handoff', 44)",
+                            SCHEMA, TEST_TABLE));
+        }
+
+        stream.initialize(snapshotStartLsn);
+        List<WalChange> changes = readChangesWithRetry(stream, 100, 10);
+        assertThat(changes)
+                .anySatisfy(
+                        change -> {
+                            assertThat(change.getType()).isEqualTo(WalChange.ChangeType.INSERT);
+                            assertThat(change.getSchema()).isEqualTo(SCHEMA);
+                            assertThat(change.getTable()).isEqualTo(TEST_TABLE);
+                        });
+
+        stream.close();
+        dropSlotIfExists(slotName);
+        System.out.println("[OK] Pre-snapshot slot retained handoff change");
+    }
+
+    @Test
+    @org.junit.jupiter.api.Order(12)
+    void testReplicaIdentityFullDeleteCommitAcrossReadBatches() throws Exception {
+        String slotName = "sf_it_full_delete";
+        dropSlotIfExists(slotName);
+
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute(
+                    String.format("ALTER TABLE %s.%s REPLICA IDENTITY FULL", SCHEMA, TEST_TABLE));
+            stmt.execute(
+                    String.format(
+                            "INSERT INTO %s.%s (id, name, age) VALUES (120012, 'full-delete', 42)",
+                            SCHEMA, TEST_TABLE));
+        }
+
+        String jdbcUrl = String.format("jdbc:gaussdb://%s:%d/%s", HOST, PORT, DATABASE);
+        WalReplicationStream stream =
+                new WalReplicationStream(
+                        connection,
+                        jdbcUrl,
+                        USERNAME,
+                        PASSWORD,
+                        slotName,
+                        "mppdb_decoding",
+                        4,
+                        "b",
+                        true,
+                        1000);
+
+        try {
+            stream.initialize();
+            assumeThat(stream.isUseReplicationApi())
+                    .as("This regression targets the SQL-function fallback")
+                    .isFalse();
+
+            try (Statement stmt = connection.createStatement()) {
+                stmt.execute(
+                        String.format("DELETE FROM %s.%s WHERE id = 120012", SCHEMA, TEST_TABLE));
+                stmt.execute(
+                        String.format(
+                                "INSERT INTO %s.%s (id, name, age) VALUES (120013, 'after-delete', 43)",
+                                SCHEMA, TEST_TABLE));
+            }
+
+            List<WalChange> allChanges = new ArrayList<>();
+            for (int i = 0; i < 30; i++) {
+                List<WalChange> batch = stream.readChanges(2);
+                if (!batch.isEmpty()) {
+                    allChanges.addAll(batch);
+                }
+                boolean hasDelete =
+                        allChanges.stream()
+                                .anyMatch(c -> c.getType() == WalChange.ChangeType.DELETE);
+                boolean hasInsert =
+                        allChanges.stream()
+                                .anyMatch(
+                                        c ->
+                                                c.getType() == WalChange.ChangeType.INSERT
+                                                        && TEST_TABLE.equals(c.getTable()));
+                if (hasDelete && hasInsert) {
+                    break;
+                }
+                Thread.sleep(200);
+            }
+
+            WalChange delete =
+                    allChanges.stream()
+                            .filter(c -> c.getType() == WalChange.ChangeType.DELETE)
+                            .findFirst()
+                            .orElseThrow(() -> new AssertionError("DELETE was not decoded"));
+            int beginIndex = -1;
+            int deleteIndex = -1;
+            int commitIndex = -1;
+            WalChange deleteCommit = null;
+            for (int i = 0; i < allChanges.size(); i++) {
+                WalChange change = allChanges.get(i);
+                if (change.getXid() != delete.getXid()) {
+                    continue;
+                }
+                if (change.getType() == WalChange.ChangeType.BEGIN) {
+                    beginIndex = i;
+                } else if (change == delete) {
+                    deleteIndex = i;
+                } else if (change.getType() == WalChange.ChangeType.COMMIT) {
+                    commitIndex = i;
+                    deleteCommit = change;
+                    break;
+                }
+            }
+            assertThat(beginIndex).isGreaterThanOrEqualTo(0);
+            assertThat(deleteIndex).isGreaterThan(beginIndex);
+            assertThat(commitIndex).isGreaterThan(deleteIndex);
+
+            GaussDBCDCSourceFunction source =
+                    GaussDBCDCSourceFunction.builder()
+                            .hostname(HOST)
+                            .port(PORT)
+                            .database(DATABASE)
+                            .schema(SCHEMA)
+                            .tableName(TEST_TABLE)
+                            .username(USERNAME)
+                            .password(PASSWORD)
+                            .walMode(true)
+                            .build();
+            setSourceField(source, "walReplicationStream", stream);
+            setSourceField(source, "snapshotCsn", -1L);
+
+            List<WalChange> beforeCommit =
+                    prepareSourceChanges(
+                            source,
+                            new ArrayList<>(allChanges.subList(beginIndex, deleteIndex + 1)));
+            assertThat(beforeCommit).isEmpty();
+            List<WalChange> afterCommit =
+                    prepareSourceChanges(
+                            source,
+                            new ArrayList<>(allChanges.subList(deleteIndex + 1, commitIndex + 1)));
+            assertThat(afterCommit).containsExactly(delete);
+            System.out.printf(
+                    "[OK] REPLICA IDENTITY FULL DELETE xid=%d survived source batch split; commitLsn=%s, commitCsn=%d%n",
+                    delete.getXid(), deleteCommit.getLsn(), deleteCommit.getCsn());
+        } finally {
+            stream.close();
+            dropSlotIfExists(slotName);
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.Order(13)
+    void testSnapshotBoundaryFunctionCompatibility() throws Exception {
+        GaussDBCDCSourceFunction source =
+                GaussDBCDCSourceFunction.builder()
+                        .hostname(HOST)
+                        .port(PORT)
+                        .database(DATABASE)
+                        .schema(SCHEMA)
+                        .tableName(TEST_TABLE)
+                        .username(USERNAME)
+                        .password(PASSWORD)
+                        .walMode(true)
+                        .build();
+        setSourceField(source, "connection", connection);
+
+        try {
+            Method method =
+                    GaussDBCDCSourceFunction.class.getDeclaredMethod("exportSnapshotBoundary");
+            method.setAccessible(true);
+            Object boundary = method.invoke(source);
+
+            assertThat(readObjectField(boundary, "snapshotId").toString()).isNotBlank();
+            assertThat((Long) readObjectField(boundary, "csn")).isGreaterThanOrEqualTo(-1L);
+            System.out.printf(
+                    "[OK] Snapshot boundary compatibility: snapshot=%s, csn=%s%n",
+                    readObjectField(boundary, "snapshotId"), readObjectField(boundary, "csn"));
+        } finally {
+            connection.rollback();
+            connection.setAutoCommit(true);
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.Order(14)
+    void testQuotedIdentifiersAndReconnectDdlDetection() throws Exception {
+        String quotedTable = TEST_TABLE + " Order";
+        String quotedPk = "select";
+        String quotedColumn = "customer\"name";
+        String quoteString = SqlIdentifierUtils.resolveQuoteString(connection);
+        String qualifiedTable = SqlIdentifierUtils.qualified(SCHEMA, quotedTable, quoteString);
+
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute("DROP TABLE IF EXISTS " + qualifiedTable);
+            stmt.execute(
+                    "CREATE TABLE "
+                            + qualifiedTable
+                            + " ("
+                            + SqlIdentifierUtils.quote(quotedPk, quoteString)
+                            + " BIGINT PRIMARY KEY, "
+                            + SqlIdentifierUtils.quote(quotedColumn, quoteString)
+                            + " VARCHAR(100))");
+            stmt.execute(
+                    "INSERT INTO "
+                            + qualifiedTable
+                            + " ("
+                            + SqlIdentifierUtils.quote(quotedPk, quoteString)
+                            + ", "
+                            + SqlIdentifierUtils.quote(quotedColumn, quoteString)
+                            + ") VALUES (7, 'quoted-ok')");
+        }
+
+        try {
+            ChangeDataPoller poller =
+                    new ChangeDataPoller(connection, SCHEMA, quotedTable, quotedPk);
+            assertThat(poller.pollNewInserts()).hasSize(1);
+
+            GaussDBCDCSourceFunction source =
+                    GaussDBCDCSourceFunction.builder()
+                            .hostname(HOST)
+                            .port(PORT)
+                            .database(DATABASE)
+                            .schema(SCHEMA)
+                            .tableName(quotedTable)
+                            .username(USERNAME)
+                            .password(PASSWORD)
+                            .walMode(true)
+                            .build();
+            setSourceField(source, "connection", connection);
+            setSourceField(source, "cachedColumnsByTable", new HashMap<String, List<String>>());
+            setSourceField(source, "cachedPkByTable", new HashMap<String, String>());
+
+            invokeSourceMethod(
+                    source, "cacheTableColumns", new Class<?>[] {String.class}, quotedTable);
+            invokeSourceMethod(
+                    source, "getPrimaryKeyColumn", new Class<?>[] {String.class}, quotedTable);
+            long[] range =
+                    (long[])
+                            invokeSourceMethod(
+                                    source,
+                                    "getIdRange",
+                                    new Class<?>[] {String.class, String.class},
+                                    quotedTable,
+                                    quotedPk);
+            assertThat(range).containsExactly(7L, 7L);
+
+            try (Statement stmt = connection.createStatement()) {
+                stmt.execute(
+                        "ALTER TABLE "
+                                + qualifiedTable
+                                + " ADD COLUMN "
+                                + SqlIdentifierUtils.quote("new column", quoteString)
+                                + " INT");
+            }
+
+            try {
+                invokeSourceMethod(
+                        source, "validateCachedTableMetadataAfterReconnect", new Class<?>[0]);
+                throw new AssertionError("Expected reconnect metadata validation to reject DDL");
+            } catch (InvocationTargetException e) {
+                assertThat(e.getCause()).isInstanceOf(SQLException.class);
+                assertThat(e.getCause().getMessage())
+                        .contains("Unsupported schema change detected")
+                        .contains("new column");
+            }
+            System.out.printf(
+                    "[OK] Quoted identifiers work and reconnect rejected changed metadata for %s%n",
+                    qualifiedTable);
+        } finally {
+            try (Statement stmt = connection.createStatement()) {
+                stmt.execute("DROP TABLE IF EXISTS " + qualifiedTable);
+            }
+        }
+    }
+
     // ---- Helper methods ----
+
+    @SuppressWarnings("unchecked")
+    private List<WalChange> prepareSourceChanges(
+            GaussDBCDCSourceFunction source, List<WalChange> changes) throws Exception {
+        Method method =
+                GaussDBCDCSourceFunction.class.getDeclaredMethod(
+                        "prepareCommittedWalChanges", List.class);
+        method.setAccessible(true);
+        return (List<WalChange>) method.invoke(source, changes);
+    }
+
+    private void setSourceField(GaussDBCDCSourceFunction source, String name, Object value)
+            throws Exception {
+        Field field = GaussDBCDCSourceFunction.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(source, value);
+    }
+
+    private Object readObjectField(Object target, String name) throws Exception {
+        Field field = target.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(target);
+    }
+
+    private Object invokeSourceMethod(
+            GaussDBCDCSourceFunction source, String name, Class<?>[] parameterTypes, Object... args)
+            throws Exception {
+        Method method = GaussDBCDCSourceFunction.class.getDeclaredMethod(name, parameterTypes);
+        method.setAccessible(true);
+        return method.invoke(source, args);
+    }
 
     private void dropSlotIfExists(String slotName) {
         try (PreparedStatement stmt =

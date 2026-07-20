@@ -29,6 +29,12 @@ import org.apache.flink.types.RowKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.Serializable;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
@@ -38,8 +44,10 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Poller for change data capture from GaussDB.
@@ -62,28 +70,70 @@ import java.util.Map;
 public class ChangeDataPoller {
 
     private static final Logger LOG = LoggerFactory.getLogger(ChangeDataPoller.class);
+    private static final int DEFAULT_BATCH_SIZE = 1000;
 
     private final Connection connection;
+    private final String database;
     private final String schema;
     private final List<String> tableNames;
     private final String outputFormat;
+    private final String outputJsonFormat;
+    private final int batchSize;
+    private String identifierQuoteString;
 
     // Per-table state
     private final Map<String, String> cachedColumns = new HashMap<>();
+    private final Map<String, List<String>> cachedColumnNames = new HashMap<>();
     private final Map<String, String> cachedPkColumns = new HashMap<>();
-    private final Map<String, Long> lastPolledIds = new HashMap<>();
+    private final Map<String, Object> lastPolledKeys = new HashMap<>();
     private final Map<String, Timestamp> lastPolledTimestamps = new HashMap<>();
+    private final Map<String, Object> lastPolledUpdateKeys = new HashMap<>();
     private final Map<String, Map<Object, RowData>> snapshots = new HashMap<>();
 
     public ChangeDataPoller(
             Connection connection, String schema, List<String> tableNames, String outputFormat) {
+        this(connection, null, schema, tableNames, outputFormat, "debezium", DEFAULT_BATCH_SIZE);
+    }
+
+    public ChangeDataPoller(
+            Connection connection,
+            String database,
+            String schema,
+            List<String> tableNames,
+            String outputFormat,
+            String outputJsonFormat) {
+        this(
+                connection,
+                database,
+                schema,
+                tableNames,
+                outputFormat,
+                outputJsonFormat,
+                DEFAULT_BATCH_SIZE);
+    }
+
+    public ChangeDataPoller(
+            Connection connection,
+            String database,
+            String schema,
+            List<String> tableNames,
+            String outputFormat,
+            String outputJsonFormat,
+            int batchSize) {
         this.connection = connection;
+        this.database = database;
         this.schema = schema;
         this.tableNames = tableNames;
         this.outputFormat = outputFormat;
+        this.outputJsonFormat = outputJsonFormat;
+        if (batchSize <= 0) {
+            throw new IllegalArgumentException("batchSize must be greater than zero");
+        }
+        this.batchSize = batchSize;
         for (String tbl : tableNames) {
-            lastPolledIds.put(tbl, 0L);
+            lastPolledKeys.put(tbl, null);
             lastPolledTimestamps.put(tbl, new Timestamp(0));
+            lastPolledUpdateKeys.put(tbl, null);
             snapshots.put(tbl, new HashMap<>());
         }
     }
@@ -94,17 +144,21 @@ public class ChangeDataPoller {
         this(connection, schema, java.util.Collections.singletonList(tableName), "raw");
         if (primaryKeyColumn != null) {
             cachedPkColumns.put(tableName, primaryKeyColumn);
+            // Preserve the legacy single-table poller's numeric starting cursor. Generic
+            // multi-table construction starts from null and supports non-numeric keys.
+            lastPolledKeys.put(tableName, 0L);
         }
     }
 
     /** Backward-compatible getter for first table's lastPolledId. */
     public long getLastPolledId() {
-        return lastPolledIds.getOrDefault(tableNames.get(0), 0L);
+        Object value = lastPolledKeys.get(tableNames.get(0));
+        return value instanceof Number ? ((Number) value).longValue() : 0L;
     }
 
     /** Backward-compatible setter for first table's lastPolledId. */
     public void setLastPolledId(long lastPolledId) {
-        lastPolledIds.put(tableNames.get(0), lastPolledId);
+        lastPolledKeys.put(tableNames.get(0), lastPolledId);
     }
 
     /** Resolve the column list for a table, cached after first access. */
@@ -122,9 +176,43 @@ public class ChangeDataPoller {
         if (columns.isEmpty()) {
             throw new SQLException("No columns found for table " + schema + "." + tbl);
         }
-        String joined = String.join(", ", columns);
+        String joined = quoteColumnList(columns);
+        cachedColumnNames.put(tbl, columns);
         cachedColumns.put(tbl, joined);
         return joined;
+    }
+
+    private String identifierQuoteString() throws SQLException {
+        if (identifierQuoteString == null) {
+            identifierQuoteString = SqlIdentifierUtils.resolveQuoteString(connection);
+        }
+        return identifierQuoteString;
+    }
+
+    private String quoteIdentifier(String identifier) throws SQLException {
+        return SqlIdentifierUtils.quote(identifier, identifierQuoteString());
+    }
+
+    private String qualifiedTable(String tbl) throws SQLException {
+        return SqlIdentifierUtils.qualified(schema, tbl, identifierQuoteString());
+    }
+
+    private String quoteColumnList(List<String> columns) throws SQLException {
+        return SqlIdentifierUtils.columnList(columns, identifierQuoteString());
+    }
+
+    private boolean hasColumn(String tbl, String columnName) throws SQLException {
+        return findColumnName(tbl, columnName) != null;
+    }
+
+    private String findColumnName(String tbl, String columnName) throws SQLException {
+        getTableColumns(tbl);
+        for (String column : cachedColumnNames.get(tbl)) {
+            if (column.equalsIgnoreCase(columnName)) {
+                return column;
+            }
+        }
+        return null;
     }
 
     /** Detect primary key column for a table, cached after first access. */
@@ -132,22 +220,40 @@ public class ChangeDataPoller {
         if (cachedPkColumns.containsKey(tbl)) {
             return cachedPkColumns.get(tbl);
         }
-        // Try DatabaseMetaData
+        // Polling cursors require one deterministic key. Reject composite/no-PK tables explicitly
+        // instead of silently using the first key column or a possibly non-existent "id" column.
         try {
             DatabaseMetaData meta = connection.getMetaData();
             ResultSet pkRs = meta.getPrimaryKeys(null, schema, tbl);
             if (pkRs != null) {
                 try (ResultSet rs = pkRs) {
-                    if (rs.next()) {
+                    List<String> pkColumns = new ArrayList<>();
+                    while (rs.next()) {
                         String pkName = rs.getString("COLUMN_NAME");
                         if (pkName != null && !pkName.isEmpty()) {
-                            cachedPkColumns.put(tbl, pkName);
-                            return pkName;
+                            pkColumns.add(pkName);
                         }
+                    }
+                    if (pkColumns.size() == 1) {
+                        cachedPkColumns.put(tbl, pkColumns.get(0));
+                        return pkColumns.get(0);
+                    }
+                    if (pkColumns.size() > 1) {
+                        throw new SQLException(
+                                "Polling CDC requires a single-column primary key for "
+                                        + schema
+                                        + "."
+                                        + tbl
+                                        + "; found composite key "
+                                        + pkColumns);
                     }
                 }
             }
         } catch (SQLException e) {
+            if (e.getMessage() != null
+                    && e.getMessage().startsWith("Polling CDC requires a single-column")) {
+                throw e;
+            }
             LOG.warn("Failed to detect PK for {}.{}: {}", schema, tbl, e.getMessage());
         }
         // Fallback: pg_index
@@ -155,23 +261,43 @@ public class ChangeDataPoller {
                 connection.prepareStatement(
                         "SELECT a.attname FROM pg_index i "
                                 + "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
-                                + "WHERE i.indrelid = ?::regclass AND i.indisprimary LIMIT 1")) {
-            stmt.setString(1, schema + "." + tbl);
+                                + "JOIN pg_class c ON c.oid = i.indrelid "
+                                + "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                                + "WHERE n.nspname = ? AND c.relname = ? AND i.indisprimary "
+                                + "ORDER BY a.attnum")) {
+            stmt.setString(1, schema);
+            stmt.setString(2, tbl);
             try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
+                List<String> pkColumns = new ArrayList<>();
+                while (rs.next()) {
                     String pkName = rs.getString(1);
                     if (pkName != null && !pkName.isEmpty()) {
-                        cachedPkColumns.put(tbl, pkName);
-                        return pkName;
+                        pkColumns.add(pkName);
                     }
+                }
+                if (pkColumns.size() == 1) {
+                    cachedPkColumns.put(tbl, pkColumns.get(0));
+                    return pkColumns.get(0);
+                }
+                if (pkColumns.size() > 1) {
+                    throw new SQLException(
+                            "Polling CDC requires a single-column primary key for "
+                                    + schema
+                                    + "."
+                                    + tbl
+                                    + "; found composite key "
+                                    + pkColumns);
                 }
             }
         } catch (SQLException e) {
+            if (e.getMessage() != null
+                    && e.getMessage().startsWith("Polling CDC requires a single-column")) {
+                throw e;
+            }
             LOG.warn("pg_index PK detection failed for {}.{}: {}", schema, tbl, e.getMessage());
         }
-        LOG.warn("No PK found for {}.{}; falling back to \"id\"", schema, tbl);
-        cachedPkColumns.put(tbl, "id");
-        return "id";
+        throw new SQLException(
+                "Polling CDC requires a primary key, but none was found for " + schema + "." + tbl);
     }
 
     /** Poll for new inserts across all tables. */
@@ -187,28 +313,51 @@ public class ChangeDataPoller {
         List<ChangeEvent<RowData>> events = new ArrayList<>();
         String columns = getTableColumns(tbl);
         String pkCol = getPrimaryKeyColumn(tbl);
-        long lastId = lastPolledIds.get(tbl);
+        Object lastKey = lastPolledKeys.get(tbl);
         Map<Object, RowData> snapshot = snapshots.get(tbl);
 
-        String sql =
-                String.format(
-                        "SELECT %s FROM %s.%s WHERE %s > ? ORDER BY %s LIMIT 1000",
-                        columns, schema, tbl, pkCol, pkCol);
+        String sql;
+        if (lastKey == null) {
+            sql =
+                    String.format(
+                            "SELECT %s FROM %s ORDER BY %s LIMIT %d",
+                            columns, qualifiedTable(tbl), quoteIdentifier(pkCol), batchSize);
+        } else {
+            sql =
+                    String.format(
+                            "SELECT %s FROM %s WHERE %s > ? ORDER BY %s LIMIT %d",
+                            columns,
+                            qualifiedTable(tbl),
+                            quoteIdentifier(pkCol),
+                            quoteIdentifier(pkCol),
+                            batchSize);
+        }
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
-            stmt.setLong(1, lastId);
+            stmt.setFetchSize(batchSize);
+            if (lastKey != null) {
+                stmt.setObject(1, lastKey);
+            }
             try (ResultSet rs = stmt.executeQuery()) {
                 ResultSetMetaData meta = rs.getMetaData();
                 while (rs.next()) {
-                    RowData row;
-                    if ("json".equalsIgnoreCase(outputFormat)) {
-                        row = convertToJsonRow(tbl, "INSERT", null, rs, meta);
-                    } else {
-                        row = convertToRowDataDynamic(rs, meta);
+                    RowData rawRow = convertToRowDataDynamic(rs, meta);
+                    Object key = readPrimaryKey(rs, pkCol);
+                    // Update polling runs first and may already have discovered this newly inserted
+                    // row through updated_at. Do not emit it a second time when advancing the PK
+                    // cursor in the same cycle.
+                    if (!snapshot.containsKey(key)) {
+                        RowData emittedRow;
+                        if ("json".equalsIgnoreCase(outputFormat)) {
+                            emittedRow = convertToJsonRow(tbl, "INSERT", null, rs, meta);
+                        } else {
+                            emittedRow = rawRow;
+                        }
+                        events.add(ChangeEvent.insert(tbl, emittedRow, System.currentTimeMillis()));
                     }
-                    events.add(ChangeEvent.insert(tbl, row, System.currentTimeMillis()));
-                    long id = rs.getLong(pkCol);
-                    snapshot.put(id, row);
-                    lastPolledIds.put(tbl, id);
+                    // Always keep the raw row in the snapshot. JSON envelopes are output records,
+                    // not comparable table state and cannot be used to build UPDATE/DELETE images.
+                    snapshot.put(key, rawRow);
+                    lastPolledKeys.put(tbl, key);
                 }
             }
         }
@@ -219,11 +368,7 @@ public class ChangeDataPoller {
     public List<ChangeEvent<RowData>> pollUpdates() throws SQLException {
         List<ChangeEvent<RowData>> events = new ArrayList<>();
         for (String tbl : tableNames) {
-            try {
-                events.addAll(pollUpdatesForTable(tbl));
-            } catch (SQLException e) {
-                LOG.warn("Could not poll updates for {}.{}: {}", schema, tbl, e.getMessage());
-            }
+            events.addAll(pollUpdatesForTable(tbl));
         }
         return events;
     }
@@ -231,26 +376,54 @@ public class ChangeDataPoller {
     private List<ChangeEvent<RowData>> pollUpdatesForTable(String tbl) throws SQLException {
         List<ChangeEvent<RowData>> events = new ArrayList<>();
         String columns = getTableColumns(tbl);
-        if (!columns.toLowerCase().contains("updated_at")) {
+        if (!hasColumn(tbl, "updated_at")) {
             return events;
         }
+        String updatedAtColumn = findColumnName(tbl, "updated_at");
         String pkCol = getPrimaryKeyColumn(tbl);
         Timestamp lastTs = lastPolledTimestamps.get(tbl);
+        Object lastUpdateKey = lastPolledUpdateKeys.get(tbl);
         Map<Object, RowData> snapshot = snapshots.get(tbl);
 
-        String sql =
-                String.format(
-                        "SELECT %s FROM %s.%s WHERE updated_at > ? ORDER BY updated_at LIMIT 1000",
-                        columns, schema, tbl);
+        String sql;
+        if (lastUpdateKey == null) {
+            sql =
+                    String.format(
+                            "SELECT %s FROM %s WHERE %s > ? ORDER BY %s, %s LIMIT %d",
+                            columns,
+                            qualifiedTable(tbl),
+                            quoteIdentifier(updatedAtColumn),
+                            quoteIdentifier(updatedAtColumn),
+                            quoteIdentifier(pkCol),
+                            batchSize);
+        } else {
+            sql =
+                    String.format(
+                            "SELECT %s FROM %s WHERE %s > ? OR (%s = ? AND %s > ?) "
+                                    + "ORDER BY %s, %s LIMIT %d",
+                            columns,
+                            qualifiedTable(tbl),
+                            quoteIdentifier(updatedAtColumn),
+                            quoteIdentifier(updatedAtColumn),
+                            quoteIdentifier(pkCol),
+                            quoteIdentifier(updatedAtColumn),
+                            quoteIdentifier(pkCol),
+                            batchSize);
+        }
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setFetchSize(batchSize);
             stmt.setTimestamp(1, lastTs);
+            if (lastUpdateKey != null) {
+                stmt.setTimestamp(2, lastTs);
+                stmt.setObject(3, lastUpdateKey);
+            }
             try (ResultSet rs = stmt.executeQuery()) {
                 ResultSetMetaData meta = rs.getMetaData();
                 while (rs.next()) {
                     RowData newRow = convertToRowDataDynamic(rs, meta);
-                    long id = rs.getLong(pkCol);
-                    Timestamp updatedAt = rs.getTimestamp("updated_at");
-                    RowData oldRow = snapshot.get(id);
+                    Object key = readPrimaryKey(rs, pkCol);
+                    Timestamp updatedAt = rs.getTimestamp(updatedAtColumn);
+                    RowData oldRow = snapshot.get(key);
 
                     if (oldRow != null) {
                         if ("json".equalsIgnoreCase(outputFormat)) {
@@ -272,9 +445,10 @@ public class ChangeDataPoller {
                             events.add(ChangeEvent.insert(tbl, newRow, System.currentTimeMillis()));
                         }
                     }
-                    snapshot.put(id, newRow);
+                    snapshot.put(key, newRow);
                     if (updatedAt != null) {
                         lastPolledTimestamps.put(tbl, updatedAt);
+                        lastPolledUpdateKeys.put(tbl, key);
                     }
                 }
             }
@@ -296,12 +470,15 @@ public class ChangeDataPoller {
         String pkCol = getPrimaryKeyColumn(tbl);
         Map<Object, RowData> snapshot = snapshots.get(tbl);
 
-        String sql = String.format("SELECT %s FROM %s.%s", pkCol, schema, tbl);
-        List<Long> currentIds = new ArrayList<>();
-        try (PreparedStatement stmt = connection.prepareStatement(sql);
-                ResultSet rs = stmt.executeQuery()) {
-            while (rs.next()) {
-                currentIds.add(rs.getLong(pkCol));
+        String sql =
+                String.format("SELECT %s FROM %s", quoteIdentifier(pkCol), qualifiedTable(tbl));
+        Set<Object> currentIds = new HashSet<>();
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setFetchSize(batchSize);
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    currentIds.add(readPrimaryKey(rs, pkCol));
+                }
             }
         }
         List<Object> deletedIds = new ArrayList<>();
@@ -330,8 +507,10 @@ public class ChangeDataPoller {
     /** Comprehensive poll for all change types across all tables. */
     public List<ChangeEvent<RowData>> pollAllChanges() throws SQLException {
         List<ChangeEvent<RowData>> allEvents = new ArrayList<>();
-        allEvents.addAll(pollNewInserts());
+        // Poll timestamp-based changes first. If that query discovers a new row, it advances the
+        // ID watermark before insert polling and prevents a duplicate INSERT in the same cycle.
         allEvents.addAll(pollUpdates());
+        allEvents.addAll(pollNewInserts());
         allEvents.addAll(pollDeletes());
         return allEvents;
     }
@@ -348,32 +527,242 @@ public class ChangeDataPoller {
         snapshot.clear();
         String columns = getTableColumns(tbl);
         String pkCol = getPrimaryKeyColumn(tbl);
-        long maxId = 0;
+        Object maxKey = null;
+        Object maxUpdatedAtKey = null;
+        Timestamp maxUpdatedAt = new Timestamp(0);
+        String updatedAtColumn = findColumnName(tbl, "updated_at");
+        boolean tracksUpdates = updatedAtColumn != null;
 
-        String sql = String.format("SELECT %s FROM %s.%s", columns, schema, tbl);
-        try (PreparedStatement stmt = connection.prepareStatement(sql);
-                ResultSet rs = stmt.executeQuery()) {
-            ResultSetMetaData meta = rs.getMetaData();
-            while (rs.next()) {
-                long id = rs.getLong(pkCol);
-                RowData row = convertToRowDataDynamic(rs, meta);
-                snapshot.put(id, row);
-                if (id > maxId) {
-                    maxId = id;
+        String sql =
+                String.format(
+                        "SELECT %s FROM %s ORDER BY %s",
+                        columns, qualifiedTable(tbl), quoteIdentifier(pkCol));
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setFetchSize(batchSize);
+            try (ResultSet rs = stmt.executeQuery()) {
+                ResultSetMetaData meta = rs.getMetaData();
+                while (rs.next()) {
+                    Object key = readPrimaryKey(rs, pkCol);
+                    RowData row = convertToRowDataDynamic(rs, meta);
+                    snapshot.put(key, row);
+                    maxKey = key;
+                    if (tracksUpdates) {
+                        Timestamp updatedAt = rs.getTimestamp(updatedAtColumn);
+                        if (updatedAt != null && updatedAt.after(maxUpdatedAt)) {
+                            maxUpdatedAt = updatedAt;
+                            maxUpdatedAtKey = key;
+                        } else if (updatedAt != null && updatedAt.equals(maxUpdatedAt)) {
+                            // Rows are ordered by PK, so the last key at this timestamp is the
+                            // correct secondary cursor for the next page.
+                            maxUpdatedAtKey = key;
+                        }
+                    }
                 }
             }
         }
-        // Only update lastPolledId if we actually loaded rows;
-        // preserve existing value for empty tables (backward compatible)
-        if (snapshot.size() > 0 || lastPolledIds.get(tbl) == 0L) {
-            lastPolledIds.put(tbl, maxId);
+        if (maxKey != null || lastPolledKeys.get(tbl) == null) {
+            lastPolledKeys.put(tbl, maxKey);
+        }
+        if (tracksUpdates) {
+            // The JDBC snapshot was already emitted by the source. Start update polling after
+            // the newest row included in that snapshot so it is not emitted a second time.
+            lastPolledTimestamps.put(tbl, maxUpdatedAt);
+            lastPolledUpdateKeys.put(tbl, maxUpdatedAtKey);
         }
         LOG.info(
-                "Loaded snapshot for {}.{}: {} rows, lastId={}",
+                "Loaded snapshot for {}.{}: {} rows, lastKey={}",
                 schema,
                 tbl,
                 snapshot.size(),
-                lastPolledIds.get(tbl));
+                lastPolledKeys.get(tbl));
+    }
+
+    private Object readPrimaryKey(ResultSet rs, String pkCol) throws SQLException {
+        Object key = rs.getObject(pkCol);
+        if (key == null && !rs.wasNull()) {
+            // Some older/mocked JDBC result sets do not implement getObject(String) correctly.
+            long numericKey = rs.getLong(pkCol);
+            if (!rs.wasNull()) {
+                key = numericKey;
+            }
+        }
+        if (key == null) {
+            throw new SQLException("Primary key " + pkCol + " returned null");
+        }
+        if (!(key instanceof Serializable)) {
+            key = key.toString();
+        }
+        return key;
+    }
+
+    /** Serialize polling cursors and delete-detection rows for Flink operator state. */
+    byte[] serializeState() throws IOException {
+        PollingState state = new PollingState();
+        state.lastPolledKeys.putAll(lastPolledKeys);
+        for (Map.Entry<String, Timestamp> entry : lastPolledTimestamps.entrySet()) {
+            state.lastPolledTimestamps.put(entry.getKey(), entry.getValue().getTime());
+        }
+        state.lastPolledUpdateKeys.putAll(lastPolledUpdateKeys);
+        for (Map.Entry<String, Map<Object, RowData>> tableEntry : snapshots.entrySet()) {
+            Map<Object, StoredRow> rows = new HashMap<>();
+            for (Map.Entry<Object, RowData> rowEntry : tableEntry.getValue().entrySet()) {
+                rows.put(rowEntry.getKey(), StoredRow.from(rowEntry.getValue()));
+            }
+            state.snapshots.put(tableEntry.getKey(), rows);
+        }
+
+        try (ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                ObjectOutputStream output = new ObjectOutputStream(bytes)) {
+            output.writeObject(state);
+            output.flush();
+            return bytes.toByteArray();
+        }
+    }
+
+    /** Restore polling state before the streaming loop starts. */
+    void restoreState(byte[] serializedState) throws IOException {
+        if (serializedState == null || serializedState.length == 0) {
+            return;
+        }
+        PollingState state;
+        try (ObjectInputStream input =
+                new ObjectInputStream(new ByteArrayInputStream(serializedState))) {
+            Object value = input.readObject();
+            if (!(value instanceof PollingState)) {
+                throw new IOException("Unexpected polling state type: " + value.getClass());
+            }
+            state = (PollingState) value;
+        } catch (ClassNotFoundException e) {
+            throw new IOException("Could not deserialize polling state", e);
+        }
+
+        lastPolledKeys.clear();
+        lastPolledKeys.putAll(state.lastPolledKeys);
+        lastPolledTimestamps.clear();
+        for (String tbl : tableNames) {
+            Long timestamp = state.lastPolledTimestamps.get(tbl);
+            lastPolledTimestamps.put(tbl, new Timestamp(timestamp == null ? 0L : timestamp));
+        }
+        lastPolledUpdateKeys.clear();
+        lastPolledUpdateKeys.putAll(state.lastPolledUpdateKeys);
+        snapshots.clear();
+        for (String tbl : tableNames) {
+            Map<Object, RowData> rows = new HashMap<>();
+            Map<Object, StoredRow> storedRows = state.snapshots.get(tbl);
+            if (storedRows != null) {
+                for (Map.Entry<Object, StoredRow> entry : storedRows.entrySet()) {
+                    rows.put(entry.getKey(), entry.getValue().toRowData());
+                }
+            }
+            snapshots.put(tbl, rows);
+            lastPolledKeys.putIfAbsent(tbl, null);
+            lastPolledUpdateKeys.putIfAbsent(tbl, null);
+        }
+    }
+
+    private static final class PollingState implements Serializable {
+        private static final long serialVersionUID = 1L;
+
+        private final Map<String, Object> lastPolledKeys = new HashMap<>();
+        private final Map<String, Long> lastPolledTimestamps = new HashMap<>();
+        private final Map<String, Object> lastPolledUpdateKeys = new HashMap<>();
+        private final Map<String, Map<Object, StoredRow>> snapshots = new HashMap<>();
+    }
+
+    private static final class StoredRow implements Serializable {
+        private static final long serialVersionUID = 1L;
+
+        private final byte rowKind;
+        private final List<StoredValue> fields;
+
+        private StoredRow(byte rowKind, List<StoredValue> fields) {
+            this.rowKind = rowKind;
+            this.fields = fields;
+        }
+
+        private static StoredRow from(RowData row) throws IOException {
+            if (!(row instanceof GenericRowData)) {
+                throw new IOException(
+                        "Polling state only supports GenericRowData, found "
+                                + row.getClass().getName());
+            }
+            GenericRowData genericRow = (GenericRowData) row;
+            List<StoredValue> fields = new ArrayList<>(genericRow.getArity());
+            for (int i = 0; i < genericRow.getArity(); i++) {
+                fields.add(StoredValue.from(genericRow.getField(i)));
+            }
+            return new StoredRow(row.getRowKind().toByteValue(), fields);
+        }
+
+        private RowData toRowData() {
+            GenericRowData row = new GenericRowData(RowKind.fromByteValue(rowKind), fields.size());
+            for (int i = 0; i < fields.size(); i++) {
+                row.setField(i, fields.get(i).toValue());
+            }
+            return row;
+        }
+    }
+
+    private static final class StoredValue implements Serializable {
+        private static final long serialVersionUID = 1L;
+
+        private enum Kind {
+            NULL,
+            STRING,
+            DECIMAL,
+            TIMESTAMP,
+            OBJECT
+        }
+
+        private final Kind kind;
+        private final Serializable value;
+        private final int precision;
+        private final int scale;
+
+        private StoredValue(Kind kind, Serializable value, int precision, int scale) {
+            this.kind = kind;
+            this.value = value;
+            this.precision = precision;
+            this.scale = scale;
+        }
+
+        private static StoredValue from(Object value) {
+            if (value == null) {
+                return new StoredValue(Kind.NULL, null, 0, 0);
+            }
+            if (value instanceof StringData) {
+                return new StoredValue(Kind.STRING, value.toString(), 0, 0);
+            }
+            if (value instanceof DecimalData) {
+                DecimalData decimal = (DecimalData) value;
+                return new StoredValue(
+                        Kind.DECIMAL, decimal.toBigDecimal(), decimal.precision(), decimal.scale());
+            }
+            if (value instanceof TimestampData) {
+                TimestampData timestamp = (TimestampData) value;
+                return new StoredValue(Kind.TIMESTAMP, timestamp.toTimestamp(), 0, 0);
+            }
+            Serializable serializable =
+                    value instanceof Serializable ? (Serializable) value : value.toString();
+            return new StoredValue(Kind.OBJECT, serializable, 0, 0);
+        }
+
+        private Object toValue() {
+            switch (kind) {
+                case NULL:
+                    return null;
+                case STRING:
+                    return StringData.fromString((String) value);
+                case DECIMAL:
+                    return DecimalData.fromBigDecimal(
+                            (java.math.BigDecimal) value, precision, scale);
+                case TIMESTAMP:
+                    return TimestampData.fromTimestamp((Timestamp) value);
+                case OBJECT:
+                default:
+                    return value;
+            }
+        }
     }
 
     // ---- JSON output helpers ----
@@ -381,46 +770,126 @@ public class ChangeDataPoller {
     private RowData convertToJsonRow(
             String tbl, String op, RowData oldRow, ResultSet rs, ResultSetMetaData meta)
             throws SQLException {
-        StringBuilder sb = new StringBuilder(256);
-        sb.append("{\"table\":\"").append(escapeJson(tbl)).append('"');
-        sb.append(",\"schema\":\"").append(escapeJson(schema)).append('"');
-        sb.append(",\"op\":\"").append(op).append('"');
-        // before
-        if (oldRow != null) {
-            sb.append(",\"before\":");
-            appendRowDataAsJson(sb, oldRow, meta);
+        String json;
+        if ("canal".equalsIgnoreCase(outputJsonFormat)) {
+            json = buildCanalJson(tbl, op, oldRow, rs, meta);
+        } else if ("he".equalsIgnoreCase(outputJsonFormat)) {
+            json = buildCustomJson(tbl, op, oldRow, rs, meta);
         } else {
-            sb.append(",\"before\":{}");
+            json = buildDebeziumJson(tbl, op, oldRow, rs, meta);
         }
-        // after
-        sb.append(",\"after\":");
-        appendResultSetAsJson(sb, rs, meta);
-        sb.append('}');
-
         GenericRowData row = new GenericRowData(1);
-        row.setField(0, StringData.fromString(sb.toString()));
+        row.setField(0, StringData.fromString(json));
         return row;
     }
 
-    private RowData convertToJsonRowForDelete(String tbl, RowData oldRow) {
-        StringBuilder sb = new StringBuilder(256);
-        sb.append("{\"table\":\"").append(escapeJson(tbl)).append('"');
-        sb.append(",\"schema\":\"").append(escapeJson(schema)).append('"');
-        sb.append(",\"op\":\"DELETE\"");
-        sb.append(",\"before\":");
-        // For delete, we don't have ResultSetMetaData here; serialize what we have
-        if (oldRow instanceof GenericRowData) {
-            GenericRowData gd = (GenericRowData) oldRow;
-            sb.append("{\"row\":\"").append(gd.toString()).append("\"}");
+    private RowData convertToJsonRowForDelete(String tbl, RowData oldRow) throws SQLException {
+        String json;
+        if ("canal".equalsIgnoreCase(outputJsonFormat)) {
+            json = buildCanalJson(tbl, "DELETE", oldRow, null, null);
+        } else if ("he".equalsIgnoreCase(outputJsonFormat)) {
+            json = buildCustomJson(tbl, "DELETE", oldRow, null, null);
         } else {
-            sb.append("{}");
+            json = buildDebeziumJson(tbl, "DELETE", oldRow, null, null);
         }
-        sb.append(",\"after\":{}}");
-
         GenericRowData row = new GenericRowData(1);
-        row.setField(0, StringData.fromString(sb.toString()));
+        row.setField(0, StringData.fromString(json));
         row.setRowKind(RowKind.DELETE);
         return row;
+    }
+
+    private String buildDebeziumJson(
+            String tbl, String operation, RowData oldRow, ResultSet rs, ResultSetMetaData meta)
+            throws SQLException {
+        long now = System.currentTimeMillis();
+        StringBuilder sb = new StringBuilder(512);
+        sb.append("{\"before\":");
+        appendBeforeJson(sb, tbl, oldRow);
+        sb.append(",\"after\":");
+        appendAfterJson(sb, rs, meta);
+        sb.append(",\"source\":{\"connector\":\"gaussdb\"");
+        sb.append(",\"db\":\"").append(escapeJson(database)).append('"');
+        sb.append(",\"schema\":\"").append(escapeJson(schema)).append('"');
+        sb.append(",\"table\":\"").append(escapeJson(tbl)).append('"');
+        sb.append(",\"ts_ms\":").append(now).append(",\"snapshot\":false}");
+        sb.append(",\"op\":\"").append(debeziumOperation(operation)).append('"');
+        sb.append(",\"ts_ms\":").append(now).append(",\"transaction\":null}");
+        return sb.toString();
+    }
+
+    private String buildCanalJson(
+            String tbl, String operation, RowData oldRow, ResultSet rs, ResultSetMetaData meta)
+            throws SQLException {
+        long now = System.currentTimeMillis();
+        StringBuilder sb = new StringBuilder(512);
+        sb.append("{\"data\":");
+        appendAfterJson(sb, rs, meta);
+        sb.append(",\"old\":");
+        appendBeforeJson(sb, tbl, oldRow);
+        sb.append(",\"database\":\"").append(escapeJson(database)).append('"');
+        sb.append(",\"table\":\"").append(escapeJson(tbl)).append('"');
+        sb.append(",\"type\":\"").append(operation).append('"');
+        appendPrimaryKeyNames(sb, tbl);
+        sb.append(",\"es\":").append(now).append(",\"ts\":").append(now);
+        sb.append(",\"isDdl\":false,\"sqlType\":{},\"mysqlType\":{}}");
+        return sb.toString();
+    }
+
+    private String buildCustomJson(
+            String tbl, String operation, RowData oldRow, ResultSet rs, ResultSetMetaData meta)
+            throws SQLException {
+        long now = System.currentTimeMillis();
+        String pkCol = getPrimaryKeyColumn(tbl);
+        StringBuilder sb = new StringBuilder(512);
+        sb.append("{\"database\":\"").append(escapeJson(database)).append('"');
+        sb.append(",\"table\":\"").append(escapeJson(tbl)).append('"');
+        sb.append(",\"optType\":\"").append(operation).append('"');
+        appendPrimaryKeyNames(sb, tbl);
+        String pkValue = rs != null ? rs.getString(pkCol) : extractValueFromRow(tbl, oldRow, pkCol);
+        if (pkValue == null) {
+            sb.append(",\"pkValues\":null");
+        } else {
+            sb.append(",\"pkValues\":\"").append(escapeJson(pkValue)).append('"');
+        }
+        sb.append(",\"es\":").append(now).append(",\"ts\":").append(now);
+        sb.append(",\"data\":");
+        appendAfterJson(sb, rs, meta);
+        sb.append(",\"old\":");
+        appendBeforeJson(sb, tbl, oldRow);
+        sb.append('}');
+        return sb.toString();
+    }
+
+    private void appendPrimaryKeyNames(StringBuilder sb, String tbl) throws SQLException {
+        String pkCol = getPrimaryKeyColumn(tbl);
+        sb.append(",\"pkNames\":[\"").append(escapeJson(pkCol)).append("\"]");
+    }
+
+    private String debeziumOperation(String operation) {
+        if ("INSERT".equals(operation)) {
+            return "c";
+        }
+        if ("DELETE".equals(operation)) {
+            return "d";
+        }
+        return "u";
+    }
+
+    private void appendBeforeJson(StringBuilder sb, String tbl, RowData oldRow) {
+        if (oldRow == null) {
+            sb.append("null");
+        } else {
+            appendRowDataAsJson(sb, tbl, oldRow);
+        }
+    }
+
+    private void appendAfterJson(StringBuilder sb, ResultSet rs, ResultSetMetaData meta)
+            throws SQLException {
+        if (rs == null) {
+            sb.append("null");
+        } else {
+            appendResultSetAsJson(sb, rs, meta);
+        }
     }
 
     private void appendResultSetAsJson(StringBuilder sb, ResultSet rs, ResultSetMetaData meta)
@@ -442,19 +911,19 @@ public class ChangeDataPoller {
         sb.append('}');
     }
 
-    private void appendRowDataAsJson(StringBuilder sb, RowData row, ResultSetMetaData meta)
-            throws SQLException {
+    private void appendRowDataAsJson(StringBuilder sb, String tbl, RowData row) {
         if (!(row instanceof GenericRowData)) {
             sb.append("{}");
             return;
         }
         GenericRowData gd = (GenericRowData) row;
+        List<String> columns = cachedColumnNames.get(tbl);
         sb.append('{');
-        for (int i = 0; i < gd.getArity() && i < meta.getColumnCount(); i++) {
+        for (int i = 0; i < gd.getArity() && i < columns.size(); i++) {
             if (i > 0) {
                 sb.append(',');
             }
-            String colName = meta.getColumnName(i + 1);
+            String colName = columns.get(i);
             sb.append('"').append(escapeJson(colName)).append("\":");
             Object val = gd.getField(i);
             if (val == null) {
@@ -466,6 +935,21 @@ public class ChangeDataPoller {
             }
         }
         sb.append('}');
+    }
+
+    private String extractValueFromRow(String tbl, RowData row, String columnName) {
+        if (!(row instanceof GenericRowData)) {
+            return null;
+        }
+        List<String> columns = cachedColumnNames.get(tbl);
+        GenericRowData genericRow = (GenericRowData) row;
+        for (int i = 0; i < columns.size() && i < genericRow.getArity(); i++) {
+            if (columnName.equalsIgnoreCase(columns.get(i))) {
+                Object value = genericRow.getField(i);
+                return value == null ? null : String.valueOf(value);
+            }
+        }
+        return null;
     }
 
     private String escapeJson(String s) {

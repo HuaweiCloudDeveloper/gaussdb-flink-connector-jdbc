@@ -39,6 +39,8 @@ public class GaussDBCDCTableSource implements ScanTableSource {
     private final String password;
     private final String slotName;
     private final boolean snapshotMode;
+    private final int chunkSize;
+    private final int connectTimeoutMs;
     private final int pollIntervalMs;
     private final boolean walMode;
     private final String decodePlugin;
@@ -50,11 +52,12 @@ public class GaussDBCDCTableSource implements ScanTableSource {
     private final Integer replicationPort;
     /** Output format: "raw" (default, RowData) or "json" (single STRING column). */
     private final String outputFormat;
-    /** JSON sub-format: "debezium" (default), "canal", or "haier". */
+    /** JSON sub-format: "debezium" (default), "canal", or "he". */
     private final String outputJsonFormat;
 
     private final DataType physicalRowDataType;
 
+    /** Backward-compatible constructor using the historical fetch and connection defaults. */
     public GaussDBCDCTableSource(
             String hostname,
             int port,
@@ -76,6 +79,54 @@ public class GaussDBCDCTableSource implements ScanTableSource {
             String outputFormat,
             String outputJsonFormat,
             DataType physicalRowDataType) {
+        this(
+                hostname,
+                port,
+                database,
+                schema,
+                tableName,
+                username,
+                password,
+                slotName,
+                snapshotMode,
+                1000,
+                30000,
+                pollIntervalMs,
+                walMode,
+                decodePlugin,
+                parallelDecodeNum,
+                decodeStyle,
+                sendingBatch,
+                sslMode,
+                replicationPort,
+                outputFormat,
+                outputJsonFormat,
+                physicalRowDataType);
+    }
+
+    public GaussDBCDCTableSource(
+            String hostname,
+            int port,
+            String database,
+            String schema,
+            String tableName,
+            String username,
+            String password,
+            String slotName,
+            boolean snapshotMode,
+            int chunkSize,
+            int connectTimeoutMs,
+            int pollIntervalMs,
+            boolean walMode,
+            String decodePlugin,
+            int parallelDecodeNum,
+            String decodeStyle,
+            boolean sendingBatch,
+            String sslMode,
+            Integer replicationPort,
+            String outputFormat,
+            String outputJsonFormat,
+            DataType physicalRowDataType) {
         this.hostname = hostname;
         this.port = port;
         this.database = database;
@@ -85,6 +136,8 @@ public class GaussDBCDCTableSource implements ScanTableSource {
         this.password = password;
         this.slotName = slotName;
         this.snapshotMode = snapshotMode;
+        this.chunkSize = chunkSize;
+        this.connectTimeoutMs = connectTimeoutMs;
         this.pollIntervalMs = pollIntervalMs;
         this.walMode = walMode;
         this.decodePlugin = decodePlugin;
@@ -116,6 +169,8 @@ public class GaussDBCDCTableSource implements ScanTableSource {
                         .password(password)
                         .slotName(slotName)
                         .snapshotMode(snapshotMode)
+                        .chunkSize(chunkSize)
+                        .connectTimeoutMs(connectTimeoutMs)
                         .pollIntervalMs(pollIntervalMs)
                         .walMode(walMode)
                         .decodePlugin(decodePlugin)
@@ -144,6 +199,8 @@ public class GaussDBCDCTableSource implements ScanTableSource {
                 password,
                 slotName,
                 snapshotMode,
+                chunkSize,
+                connectTimeoutMs,
                 pollIntervalMs,
                 walMode,
                 decodePlugin,

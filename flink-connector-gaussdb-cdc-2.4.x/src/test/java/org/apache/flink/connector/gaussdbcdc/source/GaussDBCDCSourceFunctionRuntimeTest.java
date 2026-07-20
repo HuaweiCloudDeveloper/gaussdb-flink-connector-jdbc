@@ -24,18 +24,23 @@ import org.apache.flink.table.data.RowData;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
 import java.sql.Types;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -142,6 +147,35 @@ class GaussDBCDCSourceFunctionRuntimeTest {
         assertThat(row.getArity()).isEqualTo(4);
     }
 
+    @Test
+    void testHeSelectsCustomizedJsonFormat() throws Exception {
+        GaussDBCDCSourceFunction source = createJsonSource("he");
+        Method method =
+                GaussDBCDCSourceFunction.class.getDeclaredMethod(
+                        "convertWalChangeToJson", WalChange.class);
+        method.setAccessible(true);
+        WalChange change =
+                WalChange.insert(
+                        "0/10",
+                        1L,
+                        "public",
+                        "test_table",
+                        Collections.singletonList(new WalChange.ColumnValue("id", 23, "7", false)));
+
+        RowData row = (RowData) method.invoke(source, change);
+        assertThat(row.getString(0).toString())
+                .contains("\"optType\":\"INSERT\"")
+                .contains("\"pkValues\":\"7\"")
+                .doesNotContain("\"op\":");
+    }
+
+    @Test
+    void testOldHaierSelectorIsNoLongerAccepted() throws Exception {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> createJsonSource("haier"))
+                .withMessageContaining("Unsupported output.json.format");
+    }
+
     /** Test convertWalColumnsToRowData with null column. */
     @Test
     void testConvertWalColumnsToRowDataWithNull() throws Exception {
@@ -199,7 +233,46 @@ class GaussDBCDCSourceFunctionRuntimeTest {
         method.setAccessible(true);
 
         String result = (String) method.invoke(source, "test_table");
-        assertThat(result).isEqualTo("id, name");
+        assertThat(result).isEqualTo("\"id\", \"name\"");
+    }
+
+    @Test
+    void testReconnectMetadataValidationAcceptsUnchangedColumns() throws Exception {
+        GaussDBCDCSourceFunction source = sourceWithCachedColumns(Arrays.asList("id", "name"));
+        Connection conn = mock(Connection.class);
+        DatabaseMetaData meta = mock(DatabaseMetaData.class);
+        ResultSet columnsRs = mock(ResultSet.class);
+        when(conn.getMetaData()).thenReturn(meta);
+        when(meta.getColumns(null, "public", "test_table", null)).thenReturn(columnsRs);
+        when(columnsRs.next()).thenReturn(true, true, false);
+        when(columnsRs.getString("COLUMN_NAME")).thenReturn("id", "name");
+        setConnection(source, conn);
+
+        reconnectMetadataValidationMethod().invoke(source);
+    }
+
+    @Test
+    void testReconnectMetadataValidationFailsFastOnDdl() throws Exception {
+        GaussDBCDCSourceFunction source = sourceWithCachedColumns(Arrays.asList("id", "name"));
+        Connection conn = mock(Connection.class);
+        DatabaseMetaData meta = mock(DatabaseMetaData.class);
+        ResultSet columnsRs = mock(ResultSet.class);
+        when(conn.getMetaData()).thenReturn(meta);
+        when(meta.getColumns(null, "public", "test_table", null)).thenReturn(columnsRs);
+        when(columnsRs.next()).thenReturn(true, true, true, false);
+        when(columnsRs.getString("COLUMN_NAME")).thenReturn("id", "name", "new_column");
+        setConnection(source, conn);
+
+        try {
+            reconnectMetadataValidationMethod().invoke(source);
+            throw new AssertionError("Expected schema evolution validation to fail");
+        } catch (InvocationTargetException e) {
+            assertThat(e.getCause()).isInstanceOf(SQLException.class);
+            assertThat(e.getCause().getMessage())
+                    .contains("Unsupported schema change detected")
+                    .contains("new_column")
+                    .contains("restart");
+        }
     }
 
     /** Test getIdRange via reflection with mocked connection. */
@@ -454,6 +527,57 @@ class GaussDBCDCSourceFunctionRuntimeTest {
                 .username("root")
                 .password("pass")
                 .build();
+    }
+
+    private GaussDBCDCSourceFunction createJsonSource(String jsonFormat) throws Exception {
+        GaussDBCDCSourceFunction source =
+                GaussDBCDCSourceFunction.builder()
+                        .hostname("localhost")
+                        .port(8000)
+                        .database("testdb")
+                        .schema("public")
+                        .tableName("test_table")
+                        .username("root")
+                        .password("pass")
+                        .outputFormat("json")
+                        .outputJsonFormat(jsonFormat)
+                        .build();
+        initTransientMaps(source);
+        Field pkField = GaussDBCDCSourceFunction.class.getDeclaredField("cachedPkByTable");
+        pkField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<String, String> primaryKeys = (Map<String, String>) pkField.get(source);
+        primaryKeys.put("test_table", "id");
+        return source;
+    }
+
+    private GaussDBCDCSourceFunction sourceWithCachedColumns(List<String> columns)
+            throws Exception {
+        GaussDBCDCSourceFunction source = createMinimalSource();
+        initTransientMaps(source);
+        Field columnsField =
+                GaussDBCDCSourceFunction.class.getDeclaredField("cachedColumnsByTable");
+        columnsField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<String, List<String>> columnsByTable =
+                (Map<String, List<String>>) columnsField.get(source);
+        columnsByTable.put("test_table", new ArrayList<>(columns));
+        return source;
+    }
+
+    private void setConnection(GaussDBCDCSourceFunction source, Connection connection)
+            throws Exception {
+        Field connectionField = GaussDBCDCSourceFunction.class.getDeclaredField("connection");
+        connectionField.setAccessible(true);
+        connectionField.set(source, connection);
+    }
+
+    private Method reconnectMetadataValidationMethod() throws Exception {
+        Method method =
+                GaussDBCDCSourceFunction.class.getDeclaredMethod(
+                        "validateCachedTableMetadataAfterReconnect");
+        method.setAccessible(true);
+        return method;
     }
 
     /** Initialize transient Map fields that are normally set in open(). */
