@@ -350,42 +350,11 @@ CREATE TABLE student (
 
 | 参数 | 必填 | 默认值 | 说明 |
 |-----|------|-------|------|
-| wal.mode | 否 | false | 是否启用 WAL 逻辑解码模式；生产 CDC 建议显式配置为 `true` |
+| wal.mode | 否 | true | 是否启用 WAL 逻辑解码模式 |
 | decode.plugin | 否 | mppdb_decoding | 逻辑解码插件名称。支持：mppdb_decoding（默认）、pgoutput |
-| plugin.name | 否 | - | `decode.plugin` 的废弃兼容别名；不要同时配置两个参数 |
 | slot.name | 否 | flink_cdc_slot | 复制槽名称 |
 | snapshot.mode | 否 | true | 是否先读取全量快照 |
-| chunk.size | 否 | 1000 | 快照、轮询及 SQL WAL 读取使用的 JDBC fetch/page 大小 |
-
-### 输出格式参数
-
-| 参数 | 必填 | 默认值 | 说明 |
-|-----|------|-------|------|
-| output.format | 否 | raw | 输出类型：`raw` 表示按源表固定字段输出 RowData；`json` 表示输出单列 JSON 字符串 |
-| output.json.format | 否 | debezium | `output.format=json` 时生效。支持：`debezium`（Debezium 标准 JSON）、`canal`（Canal 标准 JSON） |
-
-固定字段输出使用默认配置即可：
-
-```sql
-'output.format' = 'raw'
-```
-
-Debezium 标准 JSON：
-
-```sql
-'output.format' = 'json',
-'output.json.format' = 'debezium'
-```
-
-Canal 标准 JSON：
-
-```sql
-'output.format' = 'json',
-'output.json.format' = 'canal'
-```
-
-> `output.format=json` 时，CDC 源表应定义为单个 `STRING` 类型的输出字段。
-> `output.format=raw` 时，`output.json.format` 不生效。
+| chunk.size | 否 | 1000 | 分块大小 |
 
 ### 并行解码参数（WAL 模式）
 
