@@ -30,6 +30,7 @@ import java.sql.SQLException;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -283,8 +284,31 @@ class WalReplicationStreamAdditionalTest {
         Method method = WalReplicationStream.class.getDeclaredMethod("advanceSlot");
         method.setAccessible(true);
 
-        // Should not throw, just log warning
-        method.invoke(stream);
+        assertThatThrownBy(() -> method.invoke(stream))
+                .hasCauseInstanceOf(SQLException.class)
+                .hasRootCauseMessage("not found");
+    }
+
+    @Test
+    void testFailedCheckpointAcknowledgeRetainsSqlPeekPrefix() throws Exception {
+        PreparedStatement gaussdbStmt = mock(PreparedStatement.class);
+        when(gaussdbStmt.execute()).thenThrow(new SQLException("not found"));
+        when(connection.prepareStatement("SELECT pg_replication_slot_advance(?, ?)"))
+                .thenReturn(gaussdbStmt);
+        PreparedStatement postgresStmt = mock(PreparedStatement.class);
+        when(postgresStmt.execute()).thenThrow(new SQLException("not found"));
+        when(connection.prepareStatement("SELECT pg_logical_slot_advance(?, ?)"))
+                .thenReturn(postgresStmt);
+
+        WalReplicationStream stream = createStream(1);
+        Field pendingField = WalReplicationStream.class.getDeclaredField("sqlUnacknowledgedLsns");
+        pendingField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<String> pending = (List<String>) pendingField.get(stream);
+        pending.add("0/15A3B");
+
+        assertThatThrownBy(() -> stream.acknowledgeLsn("0/15A3B")).isInstanceOf(SQLException.class);
+        assertThat(pending).containsExactly("0/15A3B");
     }
 
     // ---- getCurrentLsn tests ----

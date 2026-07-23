@@ -40,6 +40,6 @@ class GaussDBCDCTableSourceFactoryTest {
     @Test
     void testOptionalOptions() {
         GaussDBCDCTableSourceFactory factory = new GaussDBCDCTableSourceFactory();
-        assertThat(factory.optionalOptions()).hasSize(15);
+        assertThat(factory.optionalOptions()).hasSize(17);
     }
 }

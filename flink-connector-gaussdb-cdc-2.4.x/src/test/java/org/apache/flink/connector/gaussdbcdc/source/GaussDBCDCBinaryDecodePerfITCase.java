@@ -33,6 +33,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
+import java.util.Properties;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assumptions.assumeThat;
@@ -48,13 +49,18 @@ import static org.assertj.core.api.Assumptions.assumeThat;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class GaussDBCDCBinaryDecodePerfITCase {
 
-    private static final String HOST = "1.92.120.69";
-    private static final int PORT = 8000;
-    private static final String DATABASE = "test";
-    private static final String USERNAME = "root";
-    private static final String PASSWORD = "GuassDB123";
-    private static final String SCHEMA = "public";
-    private static final String PERF_TABLE = "perf_test_binary_decode";
+    private static final Properties SYSTEM_PROPERTIES = System.getProperties();
+    private static final String HOST = SYSTEM_PROPERTIES.getProperty("gaussdb.host", "localhost");
+    private static final int PORT =
+            Integer.parseInt(SYSTEM_PROPERTIES.getProperty("gaussdb.port", "8000"));
+    private static final String DATABASE =
+            SYSTEM_PROPERTIES.getProperty("gaussdb.database", "test");
+    private static final String USERNAME =
+            SYSTEM_PROPERTIES.getProperty("gaussdb.username", "root");
+    private static final String PASSWORD = SYSTEM_PROPERTIES.getProperty("gaussdb.password", "");
+    private static final String SCHEMA = SYSTEM_PROPERTIES.getProperty("gaussdb.schema", "public");
+    private static final String PERF_TABLE =
+            SYSTEM_PROPERTIES.getProperty("gaussdb.perf.table", "perf_test_binary_decode");
 
     /** Number of rows to insert for each test run. */
     private static final int BATCH_SIZE = 10000;
@@ -63,7 +69,9 @@ class GaussDBCDCBinaryDecodePerfITCase {
 
     @BeforeAll
     void setUp() throws Exception {
-        assumeThat(Boolean.getBoolean("gaussdb.test.enabled"))
+        assumeThat(
+                        Boolean.parseBoolean(
+                                SYSTEM_PROPERTIES.getProperty("gaussdb.test.enabled", "false")))
                 .as("GaussDB perf test disabled - set -Dgaussdb.test.enabled=true")
                 .isTrue();
 

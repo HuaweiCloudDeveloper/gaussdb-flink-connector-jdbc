@@ -29,8 +29,10 @@ import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -163,8 +165,8 @@ class ChangeDataPollerTest {
         when(insertStmt.executeQuery()).thenReturn(insertRs);
         when(insertRs.getMetaData()).thenReturn(mockMeta);
         when(mockConnection.prepareStatement(
-                        "SELECT id, name, gender, age, class_name, score, created_date, updated_at "
-                                + "FROM public.test_table WHERE id > ? ORDER BY id LIMIT 1000"))
+                        "SELECT \"id\", \"name\", \"gender\", \"age\", \"class_name\", \"score\", \"created_date\", \"updated_at\" "
+                                + "FROM \"public\".\"test_table\" WHERE \"id\" > ? ORDER BY \"id\" LIMIT 1000"))
                 .thenReturn(insertStmt);
 
         poller.pollNewInserts();
@@ -185,8 +187,8 @@ class ChangeDataPollerTest {
         when(updateStmt.executeQuery()).thenReturn(updateRs);
         when(updateRs.getMetaData()).thenReturn(mockMeta);
         when(mockConnection.prepareStatement(
-                        "SELECT id, name, gender, age, class_name, score, created_date, updated_at "
-                                + "FROM public.test_table WHERE updated_at > ? ORDER BY updated_at LIMIT 1000"))
+                        "SELECT \"id\", \"name\", \"gender\", \"age\", \"class_name\", \"score\", \"created_date\", \"updated_at\" "
+                                + "FROM \"public\".\"test_table\" WHERE \"updated_at\" > ? ORDER BY \"updated_at\", \"id\" LIMIT 1000"))
                 .thenReturn(updateStmt);
 
         java.util.List<ChangeEvent<org.apache.flink.table.data.RowData>> events =
@@ -213,8 +215,8 @@ class ChangeDataPollerTest {
         when(updateStmt.executeQuery()).thenReturn(updateRs);
         when(updateRs.getMetaData()).thenReturn(mockMeta);
         when(mockConnection.prepareStatement(
-                        "SELECT id, name, gender, age, class_name, score, created_date, updated_at "
-                                + "FROM public.test_table WHERE updated_at > ? ORDER BY updated_at LIMIT 1000"))
+                        "SELECT \"id\", \"name\", \"gender\", \"age\", \"class_name\", \"score\", \"created_date\", \"updated_at\" "
+                                + "FROM \"public\".\"test_table\" WHERE \"updated_at\" > ? ORDER BY \"updated_at\", \"id\" LIMIT 1000"))
                 .thenReturn(updateStmt);
 
         java.util.List<ChangeEvent<org.apache.flink.table.data.RowData>> events =
@@ -240,8 +242,8 @@ class ChangeDataPollerTest {
         when(updateStmt.executeQuery()).thenReturn(updateRs);
         when(updateRs.getMetaData()).thenReturn(mockMeta);
         when(mockConnection.prepareStatement(
-                        "SELECT id, name, gender, age, class_name, score, created_date, updated_at "
-                                + "FROM public.test_table WHERE updated_at > ? ORDER BY updated_at LIMIT 1000"))
+                        "SELECT \"id\", \"name\", \"gender\", \"age\", \"class_name\", \"score\", \"created_date\", \"updated_at\" "
+                                + "FROM \"public\".\"test_table\" WHERE \"updated_at\" > ? ORDER BY \"updated_at\", \"id\" LIMIT 1000"))
                 .thenReturn(updateStmt);
 
         java.util.List<ChangeEvent<org.apache.flink.table.data.RowData>> events =
@@ -266,8 +268,8 @@ class ChangeDataPollerTest {
         when(insertStmt.executeQuery()).thenReturn(insertRs);
         when(insertRs.getMetaData()).thenReturn(mockMeta);
         when(mockConnection.prepareStatement(
-                        "SELECT id, name, gender, age, class_name, score, created_date, updated_at "
-                                + "FROM public.test_table WHERE id > ? ORDER BY id LIMIT 1000"))
+                        "SELECT \"id\", \"name\", \"gender\", \"age\", \"class_name\", \"score\", \"created_date\", \"updated_at\" "
+                                + "FROM \"public\".\"test_table\" WHERE \"id\" > ? ORDER BY \"id\" LIMIT 1000"))
                 .thenReturn(insertStmt);
 
         poller.pollNewInserts();
@@ -278,7 +280,7 @@ class ChangeDataPollerTest {
         when(deleteRs.next()).thenReturn(false); // No rows in DB
         when(deleteStmt.executeQuery()).thenReturn(deleteRs);
         when(deleteRs.getMetaData()).thenReturn(mockMeta);
-        when(mockConnection.prepareStatement("SELECT id FROM public.test_table"))
+        when(mockConnection.prepareStatement("SELECT \"id\" FROM \"public\".\"test_table\""))
                 .thenReturn(deleteStmt);
 
         java.util.List<ChangeEvent<org.apache.flink.table.data.RowData>> events =
@@ -304,8 +306,8 @@ class ChangeDataPollerTest {
         when(insertStmt.executeQuery()).thenReturn(insertRs);
         when(insertRs.getMetaData()).thenReturn(mockMeta);
         when(mockConnection.prepareStatement(
-                        "SELECT id, name, gender, age, class_name, score, created_date, updated_at "
-                                + "FROM public.test_table WHERE id > ? ORDER BY id LIMIT 1000"))
+                        "SELECT \"id\", \"name\", \"gender\", \"age\", \"class_name\", \"score\", \"created_date\", \"updated_at\" "
+                                + "FROM \"public\".\"test_table\" WHERE \"id\" > ? ORDER BY \"id\" LIMIT 1000"))
                 .thenReturn(insertStmt);
 
         poller.pollNewInserts();
@@ -317,7 +319,7 @@ class ChangeDataPollerTest {
         when(deleteRs.getLong("id")).thenReturn(1L);
         when(deleteStmt.executeQuery()).thenReturn(deleteRs);
         when(deleteRs.getMetaData()).thenReturn(mockMeta);
-        when(mockConnection.prepareStatement("SELECT id FROM public.test_table"))
+        when(mockConnection.prepareStatement("SELECT \"id\" FROM \"public\".\"test_table\""))
                 .thenReturn(deleteStmt);
 
         java.util.List<ChangeEvent<org.apache.flink.table.data.RowData>> events =
@@ -334,8 +336,8 @@ class ChangeDataPollerTest {
         when(insertStmt.executeQuery()).thenReturn(insertRs);
         when(insertRs.getMetaData()).thenReturn(mockMeta);
         when(mockConnection.prepareStatement(
-                        "SELECT id, name, gender, age, class_name, score, created_date, updated_at "
-                                + "FROM public.test_table WHERE id > ? ORDER BY id LIMIT 1000"))
+                        "SELECT \"id\", \"name\", \"gender\", \"age\", \"class_name\", \"score\", \"created_date\", \"updated_at\" "
+                                + "FROM \"public\".\"test_table\" WHERE \"id\" > ? ORDER BY \"id\" LIMIT 1000"))
                 .thenReturn(insertStmt);
 
         // Setup updates
@@ -345,8 +347,8 @@ class ChangeDataPollerTest {
         when(updateStmt.executeQuery()).thenReturn(updateRs);
         when(updateRs.getMetaData()).thenReturn(mockMeta);
         when(mockConnection.prepareStatement(
-                        "SELECT id, name, gender, age, class_name, score, created_date, updated_at "
-                                + "FROM public.test_table WHERE updated_at > ? ORDER BY updated_at LIMIT 1000"))
+                        "SELECT \"id\", \"name\", \"gender\", \"age\", \"class_name\", \"score\", \"created_date\", \"updated_at\" "
+                                + "FROM \"public\".\"test_table\" WHERE \"updated_at\" > ? ORDER BY \"updated_at\", \"id\" LIMIT 1000"))
                 .thenReturn(updateStmt);
 
         // Setup deletes
@@ -355,7 +357,7 @@ class ChangeDataPollerTest {
         when(deleteRs.next()).thenReturn(false);
         when(deleteStmt.executeQuery()).thenReturn(deleteRs);
         when(deleteRs.getMetaData()).thenReturn(mockMeta);
-        when(mockConnection.prepareStatement("SELECT id FROM public.test_table"))
+        when(mockConnection.prepareStatement("SELECT \"id\" FROM \"public\".\"test_table\""))
                 .thenReturn(deleteStmt);
 
         java.util.List<ChangeEvent<org.apache.flink.table.data.RowData>> events =
@@ -372,16 +374,16 @@ class ChangeDataPollerTest {
         when(insertStmt.executeQuery()).thenReturn(insertRs);
         when(insertRs.getMetaData()).thenReturn(mockMeta);
         when(mockConnection.prepareStatement(
-                        "SELECT id, name, gender, age, class_name, score, created_date, updated_at "
-                                + "FROM public.test_table WHERE id > ? ORDER BY id LIMIT 1000"))
+                        "SELECT \"id\", \"name\", \"gender\", \"age\", \"class_name\", \"score\", \"created_date\", \"updated_at\" "
+                                + "FROM \"public\".\"test_table\" WHERE \"id\" > ? ORDER BY \"id\" LIMIT 1000"))
                 .thenReturn(insertStmt);
 
         // Setup updates - throws SQLException
         PreparedStatement updateStmt = mock(PreparedStatement.class);
         when(updateStmt.executeQuery()).thenThrow(new SQLException("column updated_at not found"));
         when(mockConnection.prepareStatement(
-                        "SELECT id, name, gender, age, class_name, score, created_date, updated_at "
-                                + "FROM public.test_table WHERE updated_at > ? ORDER BY updated_at LIMIT 1000"))
+                        "SELECT \"id\", \"name\", \"gender\", \"age\", \"class_name\", \"score\", \"created_date\", \"updated_at\" "
+                                + "FROM \"public\".\"test_table\" WHERE \"updated_at\" > ? ORDER BY \"updated_at\", \"id\" LIMIT 1000"))
                 .thenReturn(updateStmt);
 
         // Setup deletes
@@ -390,13 +392,14 @@ class ChangeDataPollerTest {
         when(deleteRs.next()).thenReturn(false);
         when(deleteStmt.executeQuery()).thenReturn(deleteRs);
         when(deleteRs.getMetaData()).thenReturn(mockMeta);
-        when(mockConnection.prepareStatement("SELECT id FROM public.test_table"))
+        when(mockConnection.prepareStatement("SELECT \"id\" FROM \"public\".\"test_table\""))
                 .thenReturn(deleteStmt);
 
-        // Should not throw - update failure is caught
-        java.util.List<ChangeEvent<org.apache.flink.table.data.RowData>> events =
-                poller.pollAllChanges();
-        assertThat(events).isEmpty(); // inserts empty, updates failed, deletes empty
+        // Poll failures must fail the source so Flink can restart from checkpoint; silently
+        // continuing would permanently skip update events.
+        assertThatThrownBy(poller::pollAllChanges)
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("updated_at");
     }
 
     @Test
@@ -417,8 +420,8 @@ class ChangeDataPollerTest {
         when(snapshotStmt.executeQuery()).thenReturn(snapshotRs);
         when(snapshotRs.getMetaData()).thenReturn(mockMeta);
         when(mockConnection.prepareStatement(
-                        "SELECT id, name, gender, age, class_name, score, created_date, updated_at "
-                                + "FROM public.test_table"))
+                        "SELECT \"id\", \"name\", \"gender\", \"age\", \"class_name\", \"score\", \"created_date\", \"updated_at\" "
+                                + "FROM \"public\".\"test_table\" ORDER BY \"id\""))
                 .thenReturn(snapshotStmt);
 
         poller.loadSnapshot();
@@ -433,8 +436,8 @@ class ChangeDataPollerTest {
         when(snapshotStmt.executeQuery()).thenReturn(snapshotRs);
         when(snapshotRs.getMetaData()).thenReturn(mockMeta);
         when(mockConnection.prepareStatement(
-                        "SELECT id, name, gender, age, class_name, score, created_date, updated_at "
-                                + "FROM public.test_table"))
+                        "SELECT \"id\", \"name\", \"gender\", \"age\", \"class_name\", \"score\", \"created_date\", \"updated_at\" "
+                                + "FROM \"public\".\"test_table\" ORDER BY \"id\""))
                 .thenReturn(snapshotStmt);
 
         poller.setLastPolledId(10L);
@@ -462,5 +465,155 @@ class ChangeDataPollerTest {
         java.util.List<ChangeEvent<org.apache.flink.table.data.RowData>> events =
                 poller.pollNewInserts();
         assertThat(events).hasSize(1);
+    }
+
+    @Test
+    void testUpdatePaginationContinuesWithinSameTimestamp() throws SQLException {
+        String firstPageSql =
+                "SELECT \"id\", \"name\", \"gender\", \"age\", \"class_name\", \"score\", \"created_date\", \"updated_at\" "
+                        + "FROM \"public\".\"test_table\" WHERE \"updated_at\" > ? "
+                        + "ORDER BY \"updated_at\", \"id\" LIMIT 1000";
+        String nextPageSql =
+                "SELECT \"id\", \"name\", \"gender\", \"age\", \"class_name\", \"score\", \"created_date\", \"updated_at\" "
+                        + "FROM \"public\".\"test_table\" WHERE \"updated_at\" > ? "
+                        + "OR (\"updated_at\" = ? AND \"id\" > ?) "
+                        + "ORDER BY \"updated_at\", \"id\" LIMIT 1000";
+
+        PreparedStatement firstStmt = mock(PreparedStatement.class);
+        ResultSet firstRs = mock(ResultSet.class);
+        when(firstStmt.executeQuery()).thenReturn(firstRs);
+        when(firstRs.getMetaData()).thenReturn(mockMeta);
+        when(firstRs.next()).thenReturn(true, false);
+        when(firstRs.getObject("id")).thenReturn(1000L);
+        when(firstRs.getTimestamp("updated_at")).thenReturn(new Timestamp(5000L));
+
+        PreparedStatement nextStmt = mock(PreparedStatement.class);
+        ResultSet nextRs = mock(ResultSet.class);
+        when(nextStmt.executeQuery()).thenReturn(nextRs);
+        when(nextRs.getMetaData()).thenReturn(mockMeta);
+        when(nextRs.next()).thenReturn(true, false);
+        when(nextRs.getObject("id")).thenReturn(1001L);
+        when(nextRs.getTimestamp("updated_at")).thenReturn(new Timestamp(5000L));
+
+        when(mockConnection.prepareStatement(firstPageSql)).thenReturn(firstStmt);
+        when(mockConnection.prepareStatement(nextPageSql)).thenReturn(nextStmt);
+
+        assertThat(poller.pollUpdates()).hasSize(1);
+        assertThat(poller.pollUpdates()).hasSize(1);
+        org.mockito.Mockito.verify(nextStmt).setTimestamp(1, new Timestamp(5000L));
+        org.mockito.Mockito.verify(nextStmt).setTimestamp(2, new Timestamp(5000L));
+        org.mockito.Mockito.verify(nextStmt).setObject(3, 1000L);
+    }
+
+    @Test
+    void testPollingSupportsStringPrimaryKey() throws SQLException {
+        Connection connection = mock(Connection.class);
+        DatabaseMetaData metadata = mock(DatabaseMetaData.class);
+        ResultSet columns = mock(ResultSet.class);
+        ResultSet primaryKeys = mock(ResultSet.class);
+        when(connection.getMetaData()).thenReturn(metadata);
+        when(metadata.getIdentifierQuoteString()).thenReturn("\"");
+        when(metadata.getColumns(null, "public", "string_pk", null)).thenReturn(columns);
+        when(columns.next()).thenReturn(true, false);
+        when(columns.getString("COLUMN_NAME")).thenReturn("code");
+        when(metadata.getPrimaryKeys(null, "public", "string_pk")).thenReturn(primaryKeys);
+        when(primaryKeys.next()).thenReturn(true, false);
+        when(primaryKeys.getString("COLUMN_NAME")).thenReturn("code");
+
+        ResultSetMetaData rowMeta = mock(ResultSetMetaData.class);
+        when(rowMeta.getColumnCount()).thenReturn(1);
+        when(rowMeta.getColumnType(1)).thenReturn(java.sql.Types.VARCHAR);
+        PreparedStatement firstStmt = mock(PreparedStatement.class);
+        ResultSet firstRs = mock(ResultSet.class);
+        when(firstStmt.executeQuery()).thenReturn(firstRs);
+        when(firstRs.getMetaData()).thenReturn(rowMeta);
+        when(firstRs.next()).thenReturn(true, false);
+        when(firstRs.getObject("code")).thenReturn("A");
+        when(firstRs.getString(1)).thenReturn("A");
+        PreparedStatement nextStmt = mock(PreparedStatement.class);
+        ResultSet nextRs = mock(ResultSet.class);
+        when(nextStmt.executeQuery()).thenReturn(nextRs);
+        when(nextRs.getMetaData()).thenReturn(rowMeta);
+        when(nextRs.next()).thenReturn(true, false);
+        when(nextRs.getObject("code")).thenReturn("B");
+        when(nextRs.getString(1)).thenReturn("B");
+        when(connection.prepareStatement(
+                        "SELECT \"code\" FROM \"public\".\"string_pk\" ORDER BY \"code\" LIMIT 1000"))
+                .thenReturn(firstStmt);
+        when(connection.prepareStatement(
+                        "SELECT \"code\" FROM \"public\".\"string_pk\" WHERE \"code\" > ? ORDER BY \"code\" LIMIT 1000"))
+                .thenReturn(nextStmt);
+
+        ChangeDataPoller stringPoller =
+                new ChangeDataPoller(
+                        connection,
+                        "db",
+                        "public",
+                        Collections.singletonList("string_pk"),
+                        "raw",
+                        "debezium");
+        assertThat(stringPoller.pollNewInserts()).hasSize(1);
+        assertThat(stringPoller.pollNewInserts()).hasSize(1);
+        org.mockito.Mockito.verify(nextStmt).setObject(1, "A");
+    }
+
+    @Test
+    void testPollingRejectsCompositePrimaryKey() throws SQLException {
+        Connection connection = mock(Connection.class);
+        DatabaseMetaData metadata = mock(DatabaseMetaData.class);
+        ResultSet columns = mock(ResultSet.class);
+        ResultSet primaryKeys = mock(ResultSet.class);
+        when(connection.getMetaData()).thenReturn(metadata);
+        when(metadata.getIdentifierQuoteString()).thenReturn("\"");
+        when(metadata.getColumns(null, "public", "composite_pk", null)).thenReturn(columns);
+        when(columns.next()).thenReturn(true, true, false);
+        when(columns.getString("COLUMN_NAME")).thenReturn("tenant_id", "record_id");
+        when(metadata.getPrimaryKeys(null, "public", "composite_pk")).thenReturn(primaryKeys);
+        when(primaryKeys.next()).thenReturn(true, true, false);
+        when(primaryKeys.getString("COLUMN_NAME")).thenReturn("tenant_id", "record_id");
+
+        ChangeDataPoller compositePoller =
+                new ChangeDataPoller(
+                        connection,
+                        "db",
+                        "public",
+                        Collections.singletonList("composite_pk"),
+                        "raw",
+                        "debezium");
+
+        assertThatThrownBy(compositePoller::pollNewInserts)
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("composite key");
+    }
+
+    @Test
+    void testPollingStateRestoresDeleteSnapshot() throws Exception {
+        PreparedStatement insertStmt = mock(PreparedStatement.class);
+        ResultSet insertRs = mock(ResultSet.class);
+        when(insertStmt.executeQuery()).thenReturn(insertRs);
+        when(insertRs.getMetaData()).thenReturn(mockMeta);
+        when(insertRs.next()).thenReturn(true, false);
+        when(insertRs.getObject("id")).thenReturn(7L);
+        when(mockConnection.prepareStatement(anyString())).thenReturn(insertStmt);
+        assertThat(poller.pollNewInserts()).hasSize(1);
+
+        byte[] state = poller.serializeState();
+
+        Connection restoredConnection = mock(Connection.class);
+        DatabaseMetaData restoredMetadata = mock(DatabaseMetaData.class);
+        when(restoredConnection.getMetaData()).thenReturn(restoredMetadata);
+        when(restoredMetadata.getIdentifierQuoteString()).thenReturn("\"");
+        PreparedStatement deleteStmt = mock(PreparedStatement.class);
+        ResultSet deleteRs = mock(ResultSet.class);
+        when(deleteStmt.executeQuery()).thenReturn(deleteRs);
+        when(deleteRs.next()).thenReturn(false);
+        when(restoredConnection.prepareStatement("SELECT \"id\" FROM \"public\".\"test_table\""))
+                .thenReturn(deleteStmt);
+
+        ChangeDataPoller restored =
+                new ChangeDataPoller(restoredConnection, "public", "test_table", "id");
+        restored.restoreState(state);
+        assertThat(restored.getLastPolledId()).isEqualTo(7L);
+        assertThat(restored.pollDeletes()).hasSize(1);
     }
 }

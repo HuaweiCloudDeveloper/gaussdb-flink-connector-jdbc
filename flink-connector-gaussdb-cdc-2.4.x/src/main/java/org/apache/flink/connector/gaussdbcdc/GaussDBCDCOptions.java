@@ -80,7 +80,37 @@ public class GaussDBCDCOptions {
             ConfigOptions.key("table-name")
                     .stringType()
                     .noDefaultValue()
-                    .withDescription("Table name of the GaussDB table to monitor.");
+                    .withDescription(
+                            "Table name of the GaussDB table to monitor. "
+                                    + "Supports regex matching for multi-table capture, e.g. "
+                                    + "'orders_.*' matches all tables starting with 'orders_'. "
+                                    + "When no regex metacharacters are present, exact match "
+                                    + "is used (backward compatible with single-table mode).");
+
+    public static final ConfigOption<String> OUTPUT_FORMAT =
+            ConfigOptions.key("output.format")
+                    .stringType()
+                    .defaultValue("raw")
+                    .withDescription(
+                            "Output format for CDC events. "
+                                    + "'raw' (default): outputs RowData with fixed columns "
+                                    + "(requires homogeneous table schemas). "
+                                    + "'json': outputs a single STRING column containing JSON "
+                                    + "with table name, operation type, and column values "
+                                    + "(supports heterogeneous tables with different schemas).");
+
+    public static final ConfigOption<String> OUTPUT_JSON_FORMAT =
+            ConfigOptions.key("output.json.format")
+                    .stringType()
+                    .defaultValue("debezium")
+                    .withDescription(
+                            "JSON output format when output.format=json. "
+                                    + "'debezium' (default): Debezium standard format "
+                                    + "(before/after/source/op/ts_ms), compatible with Flink CDC. "
+                                    + "'canal': Canal standard format "
+                                    + "(data/old/database/table/type/es/ts/pkNames/isDdl/sqlType). "
+                                    + "'he': customized Canal format "
+                                    + "(data/old/database/table/optType/es/ts/pkNames/pkValues).");
 
     public static final ConfigOption<String> SLOT_NAME =
             ConfigOptions.key("slot.name")
@@ -91,8 +121,9 @@ public class GaussDBCDCOptions {
     public static final ConfigOption<String> PLUGIN_NAME =
             ConfigOptions.key("plugin.name")
                     .stringType()
-                    .defaultValue("pgoutput")
-                    .withDescription("Name of the GaussDB logical decoding plugin.");
+                    .noDefaultValue()
+                    .withDescription(
+                            "Deprecated alias of decode.plugin. Do not configure both options.");
 
     public static final ConfigOption<Boolean> SNAPSHOT_MODE =
             ConfigOptions.key("snapshot.mode")
@@ -105,7 +136,8 @@ public class GaussDBCDCOptions {
             ConfigOptions.key("chunk.size")
                     .intType()
                     .defaultValue(1000)
-                    .withDescription("Number of rows to read in each chunk during snapshot.");
+                    .withDescription(
+                            "JDBC fetch/page size used by snapshot, polling, and SQL WAL reads.");
 
     public static final ConfigOption<Integer> CONNECT_TIMEOUT_MS =
             ConfigOptions.key("connect.timeout.ms")

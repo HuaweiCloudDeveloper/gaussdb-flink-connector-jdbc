@@ -87,7 +87,7 @@ class WalReplicationStreamTest {
 
         // Mock createSlot
         PreparedStatement createStmt = mock(PreparedStatement.class);
-        when(connection.prepareStatement("SELECT pg_create_logical_replication_slot(?, ?)"))
+        when(connection.prepareStatement("SELECT * FROM pg_create_logical_replication_slot(?, ?)"))
                 .thenReturn(createStmt);
 
         // Mock getCurrentLsn
@@ -114,6 +114,40 @@ class WalReplicationStreamTest {
 
         assertThat(stream.isRunning()).isTrue();
         assertThat(stream.getLastLsn()).isEqualTo("0/0");
+    }
+
+    @Test
+    void testPrepareSlotForSnapshotReturnsCreationLsn() throws Exception {
+        PreparedStatement checkStmt = mock(PreparedStatement.class);
+        ResultSet checkRs = mock(ResultSet.class);
+        when(checkStmt.executeQuery()).thenReturn(checkRs);
+        when(checkRs.next()).thenReturn(false);
+        when(connection.prepareStatement("SELECT 1 FROM pg_replication_slots WHERE slot_name = ?"))
+                .thenReturn(checkStmt);
+
+        PreparedStatement createStmt = mock(PreparedStatement.class);
+        ResultSet createRs = mock(ResultSet.class);
+        when(createStmt.execute()).thenReturn(true);
+        when(createStmt.getResultSet()).thenReturn(createRs);
+        when(createRs.next()).thenReturn(true);
+        when(createRs.getString(2)).thenReturn("0/ABC");
+        when(connection.prepareStatement("SELECT * FROM pg_create_logical_replication_slot(?, ?)"))
+                .thenReturn(createStmt);
+
+        WalReplicationStream stream =
+                new WalReplicationStream(
+                        connection,
+                        "jdbc:gaussdb://localhost:8000/test",
+                        "root",
+                        "pass",
+                        "test_slot",
+                        "pgoutput",
+                        1,
+                        "b",
+                        false,
+                        1000);
+
+        assertThat(stream.prepareSlotForSnapshot()).isEqualTo("0/ABC");
     }
 
     @Test

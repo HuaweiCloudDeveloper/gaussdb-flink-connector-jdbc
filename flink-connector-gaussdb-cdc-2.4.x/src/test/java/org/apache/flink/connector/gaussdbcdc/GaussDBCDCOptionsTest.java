@@ -34,7 +34,7 @@ public class GaussDBCDCOptionsTest {
         assertEquals(Integer.valueOf(8000), GaussDBCDCOptions.PORT.defaultValue());
         assertEquals("public", GaussDBCDCOptions.SCHEMA.defaultValue());
         assertEquals("flink_cdc_slot", GaussDBCDCOptions.SLOT_NAME.defaultValue());
-        assertEquals("pgoutput", GaussDBCDCOptions.PLUGIN_NAME.defaultValue());
+        assertNull(GaussDBCDCOptions.PLUGIN_NAME.defaultValue());
         assertEquals(Boolean.TRUE, GaussDBCDCOptions.SNAPSHOT_MODE.defaultValue());
         assertEquals(Integer.valueOf(1000), GaussDBCDCOptions.CHUNK_SIZE.defaultValue());
         assertEquals(Integer.valueOf(30000), GaussDBCDCOptions.CONNECT_TIMEOUT_MS.defaultValue());

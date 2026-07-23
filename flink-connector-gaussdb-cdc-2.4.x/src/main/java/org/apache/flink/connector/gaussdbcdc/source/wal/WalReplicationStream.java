@@ -81,7 +81,9 @@ public class WalReplicationStream {
     private String lastLsn;
     private boolean running = false;
     private boolean useReplicationApi = false;
-    private boolean firstSqlRead = true;
+    // SQL peek does not move the server slot. Keep the LSN of every row read since the last
+    // completed checkpoint so later peeks can skip that prefix while still retaining it for replay.
+    private final List<String> sqlUnacknowledgedLsns = new ArrayList<>();
 
     private final MppdbBinaryDecoder binaryDecoder;
 
@@ -154,6 +156,23 @@ public class WalReplicationStream {
     }
 
     /**
+     * Ensure that the logical slot exists before a JDBC snapshot starts and return its WAL
+     * position. Creating the slot before the SELECT snapshot is essential: otherwise WAL generated
+     * while the snapshot is running is not retained and can be lost at the snapshot/stream handoff.
+     */
+    public String prepareSlotForSnapshot() throws SQLException {
+        String slotLsn = null;
+        if (!slotExists()) {
+            slotLsn = createSlot();
+        }
+        if (slotLsn == null || slotLsn.isEmpty()) {
+            slotLsn = getCurrentLsn();
+        }
+        LOG.info("Prepared replication slot '{}' for snapshot at LSN {}", slotName, slotLsn);
+        return slotLsn;
+    }
+
+    /**
      * Initialize the replication stream with a specific starting LSN.
      *
      * <p>After an initial snapshot has been taken, pass the LSN recorded just before the snapshot
@@ -172,15 +191,10 @@ public class WalReplicationStream {
                 sendingBatch,
                 startLsn);
 
-        // Check if slot exists; track whether we just created it.
-        // When a new slot is created and the JDBC replication API is used,
-        // mppdb_decoding emits a full consistency snapshot (snapbuild) as
-        // its first output batch. We consume and discard this snapshot below
-        // to avoid duplicating data already captured by the JDBC snapshot.
-        boolean slotWasNew = false;
+        // The source normally prepares the slot before taking a JDBC snapshot so that changes
+        // committed during the snapshot are retained. Keep this fallback for streaming-only mode.
         if (!slotExists()) {
             createSlot();
-            slotWasNew = true;
         }
 
         // Use the provided startLsn instead of always starting from "0/0".
@@ -203,28 +217,6 @@ public class WalReplicationStream {
                     "JDBC replication API not available, falling back to SQL function polling: {}",
                     e.getMessage());
             useReplicationApi = false;
-            firstSqlRead = true;
-        }
-
-        // When a new slot is created and the JDBC replication API is active,
-        // mppdb_decoding's first output batch is a full consistency snapshot of
-        // all current table data. Since the caller already performed a JDBC
-        // snapshot (SELECT *), this data would be duplicated. Consume and
-        // discard it now so downstream only sees incremental changes.
-        if (slotWasNew && useReplicationApi) {
-            try {
-                int consumed = consumeInitialSnapshot();
-                LOG.info(
-                        "Consumed {} mppdb_decoding snapshot changes from new slot '{}'",
-                        consumed,
-                        slotName);
-            } catch (Exception e) {
-                LOG.warn(
-                        "Failed to consume initial mppdb_decoding snapshot for slot '{}' "
-                                + "(duplicate data may appear): {}",
-                        slotName,
-                        e.getMessage());
-            }
         }
 
         // SQL function fallback path: pg_logical_slot_peek_changes(NULL, ...)
@@ -234,7 +226,7 @@ public class WalReplicationStream {
         // read only picks up changes after the snapshot position.
         if (!useReplicationApi && !"0/0".equals(startLsn)) {
             try {
-                advanceSlot();
+                advanceSlot(startLsn);
                 LOG.info(
                         "Advanced slot '{}' to snapshot LSN {} for SQL function polling",
                         slotName,
@@ -248,41 +240,6 @@ public class WalReplicationStream {
         }
 
         running = true;
-    }
-
-    /**
-     * Read and discard the initial consistency snapshot emitted by mppdb_decoding when a brand-new
-     * replication slot starts streaming.
-     *
-     * @return number of snapshot changes consumed and discarded
-     */
-    private int consumeInitialSnapshot() throws SQLException {
-        LOG.debug("Reading initial mppdb_decoding snapshot data from new slot '{}'...", slotName);
-
-        // The JDBC replication stream may not have data available immediately
-        // after start(). Retry a few times with delays to catch the snapshot
-        // batch before the main read loop picks it up.
-        int totalConsumed = 0;
-        for (int attempt = 0; attempt < 5; attempt++) {
-            List<WalChange> batch = readChanges(10000);
-            if (batch.isEmpty()) {
-                // No data yet — wait and retry
-                try {
-                    Thread.sleep(200);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-                continue;
-            }
-            totalConsumed += batch.size();
-            // Snapshot data typically arrives in one batch; if we got data,
-            // we're done.
-            break;
-        }
-
-        LOG.debug("Discarded {} snapshot changes from slot '{}'", totalConsumed, slotName);
-        return totalConsumed;
     }
 
     /**
@@ -432,7 +389,7 @@ public class WalReplicationStream {
      * @param maxChanges maximum number of changes to read
      * @return list of WAL changes
      */
-    public List<WalChange> readChanges(int maxChanges) throws SQLException {
+    public synchronized List<WalChange> readChanges(int maxChanges) throws SQLException {
         if (useReplicationApi) {
             return readChangesFromReplicationApi(maxChanges);
         } else {
@@ -521,6 +478,14 @@ public class WalReplicationStream {
                 byte[] data = new byte[buffer.remaining()];
                 buffer.get(data);
 
+                // Capture the receive LSN for this replication record before decoding it. Serial
+                // mppdb_decoding records do not embed an LSN in their JSON/text payload, so using
+                // the previous value of lastLsn would make the first valid record look stale.
+                String recordLsn = getLastReceiveLsn();
+                if (recordLsn == null) {
+                    recordLsn = lastLsn;
+                }
+
                 // Decode the batch based on the actual output format.
                 // When parallelDecodeNum > 1, mppdb_decoding outputs in the format
                 // specified by decode-style (b=binary, j=json, t=text).
@@ -533,11 +498,14 @@ public class WalReplicationStream {
                 if (parallelDecodeNum > 1 && "b".equals(decodeStyle)) {
                     // Binary format: use MppdbBinaryDecoder
                     batchChanges = binaryDecoder.decodeBatch(data);
+                } else if (parallelDecodeNum > 1 && "j".equals(decodeStyle)) {
+                    // Parallel JSON mode may frame multiple JSON objects in one replication batch.
+                    batchChanges = parseJsonBatch(data, recordLsn);
                 } else {
                     // JSON/text format: parse each record individually.
                     // mppdb_decoding serial mode outputs one record per readPending()
                     // call (BEGIN, COMMIT as text; INSERT/UPDATE/DELETE as JSON).
-                    batchChanges = parseReplicationRecord(data);
+                    batchChanges = parseReplicationRecord(data, recordLsn);
                 }
 
                 changes.addAll(batchChanges);
@@ -552,15 +520,13 @@ public class WalReplicationStream {
 
                 // Also try to get LSN directly from the stream (more reliable
                 // for flow control than extracting from decoded data)
-                String streamLsn = getLastReceiveLsn();
+                String streamLsn = recordLsn;
                 if (streamLsn != null) {
                     lastLsn = streamLsn;
                 }
 
-                // Update flushed LSN on the stream to acknowledge processing
-                updateFlushedLsn(lastLsn);
-
-                // Force status update so the server can send more batches
+                // Keep the replication connection alive, but acknowledge applied/flushed LSNs only
+                // after a completed Flink checkpoint via acknowledgeLsn().
                 forceUpdateStatusMethod.invoke(replicationStream);
 
                 if (batchCount >= 100) {
@@ -614,7 +580,7 @@ public class WalReplicationStream {
      * determine when it can send more data. Without updating this, the server stops sending after a
      * few batches.
      */
-    private void updateFlushedLsn(String lsn) {
+    private void updateFlushedLsn(String lsn) throws SQLException {
         try {
             Class<?> lsnClass =
                     Class.forName(
@@ -628,7 +594,7 @@ public class WalReplicationStream {
                     replicationStream.getClass().getMethod("setFlushedLSN", lsnClass);
             setFlushedLSN.invoke(replicationStream, lsnObj);
         } catch (Exception e) {
-            LOG.debug("Could not update flushed LSN: {}", e.getMessage());
+            throw new SQLException("Could not update flushed LSN " + lsn, e);
         }
     }
 
@@ -650,6 +616,10 @@ public class WalReplicationStream {
      * @return list of parsed WalChange records (usually 1, may be empty for non-data records)
      */
     private List<WalChange> parseReplicationRecord(byte[] data) {
+        return parseReplicationRecord(data, lastLsn);
+    }
+
+    private List<WalChange> parseReplicationRecord(byte[] data, String recordLsn) {
         List<WalChange> changes = new ArrayList<>();
         if (data == null || data.length == 0) {
             return changes;
@@ -662,7 +632,7 @@ public class WalReplicationStream {
 
         // Delegate to parseChangeData which handles all formats:
         // BEGIN, COMMIT (text), JSON objects ({...}), and text-style changes (INSERT: ...)
-        WalChange change = parseChangeData(lastLsn, 0, text);
+        WalChange change = parseChangeData(recordLsn, 0, text);
         if (change != null) {
             changes.add(change);
         }
@@ -679,6 +649,10 @@ public class WalReplicationStream {
      * BEGIN/COMMIT markers.
      */
     private List<WalChange> parseJsonBatch(byte[] data) {
+        return parseJsonBatch(data, lastLsn);
+    }
+
+    private List<WalChange> parseJsonBatch(byte[] data, String recordLsn) {
         List<WalChange> changes = new ArrayList<>();
         String content = new String(data, java.nio.charset.StandardCharsets.UTF_8);
 
@@ -707,7 +681,7 @@ public class WalReplicationStream {
             }
             if (depth == 0) {
                 String jsonStr = content.substring(jsonStart, jsonEnd + 1);
-                WalChange change = parseChangeData(lastLsn, 0, jsonStr);
+                WalChange change = parseChangeData(recordLsn, 0, jsonStr);
                 if (change != null) {
                     changes.add(change);
                 }
@@ -739,34 +713,32 @@ public class WalReplicationStream {
             // For SQL function mode, parallel-decode-num alone controls parallelism.
         }
 
-        // On the first read after initialization, pass the snapshot start LSN
-        // instead of NULL. This skips WAL records already captured by the JDBC
-        // snapshot. pg_logical_slot_peek_changes with a specific LSN may return
-        // empty after pg_replication_slot_advance() on some GaussDB versions,
-        // so we only use this on the first call and fall back to NULL afterwards.
-        String startLsnArg;
-        if (firstSqlRead && !"0/0".equals(lastLsn)) {
-            startLsnArg = "'" + lastLsn + "'";
-            firstSqlRead = false;
-            LOG.info(
-                    "First SQL read: passing start LSN {} to pg_logical_slot_peek_changes",
-                    lastLsn);
-        } else {
-            startLsnArg = "NULL";
-        }
+        // GaussDB follows PostgreSQL's peek signature: the LSN argument is an upper bound, not a
+        // start position. Keep it NULL and request the already-read prefix plus one new page. The
+        // prefix remains on the server until a Flink checkpoint acknowledges it.
+        int alreadyRead = sqlUnacknowledgedLsns.size();
+        int queryLimit = (int) Math.min((long) Integer.MAX_VALUE, (long) alreadyRead + maxChanges);
 
         String sql =
                 String.format(
                         "SELECT location AS lsn, xid, data FROM pg_logical_slot_peek_changes(?, %s, ?, %s)",
-                        startLsnArg, optionBuilder);
+                        "NULL", optionBuilder);
 
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setFetchSize(fetchSize);
             stmt.setString(1, slotName);
-            stmt.setInt(2, maxChanges);
+            stmt.setInt(2, queryLimit);
 
             try (ResultSet rs = stmt.executeQuery()) {
+                int rowIndex = 0;
                 while (rs.next()) {
+                    rowIndex++;
                     String lsn = rs.getString("lsn");
+                    if (rowIndex <= alreadyRead) {
+                        continue;
+                    }
+                    sqlUnacknowledgedLsns.add(lsn);
+                    lastLsn = lsn;
                     long xid = rs.getLong("xid");
                     String data = rs.getString("data");
 
@@ -779,15 +751,9 @@ public class WalReplicationStream {
                         if (change != null) {
                             changes.add(change);
                         }
-                        lastLsn = lsn;
                     }
                 }
             }
-        }
-
-        // Advance the slot position after peeking
-        if (!changes.isEmpty()) {
-            advanceSlot();
         }
 
         return changes;
@@ -800,25 +766,37 @@ public class WalReplicationStream {
      * pg_logical_slot_advance(). This method tries both for compatibility.
      */
     private void advanceSlot() throws SQLException {
-        if (lastLsn == null) {
+        advanceSlot(lastLsn);
+    }
+
+    private void advanceSlot(String targetLsn) throws SQLException {
+        if (targetLsn == null) {
             return;
         }
         // Try GaussDB compatible function first, then PostgreSQL function
         String[] sqlCandidates = {
             "SELECT pg_replication_slot_advance(?, ?)", "SELECT pg_logical_slot_advance(?, ?)"
         };
+        SQLException lastFailure = null;
         for (String sql : sqlCandidates) {
             try (PreparedStatement stmt = connection.prepareStatement(sql)) {
                 stmt.setString(1, slotName);
-                stmt.setString(2, lastLsn);
+                stmt.setString(2, targetLsn);
                 stmt.execute();
-                LOG.debug("Advanced slot {} to {} via {}", slotName, lastLsn, sql);
+                LOG.debug("Advanced slot {} to {} via {}", slotName, targetLsn, sql);
                 return;
             } catch (SQLException e) {
+                lastFailure = e;
                 LOG.debug("Advance function not available: {} - {}", sql, e.getMessage());
             }
         }
-        LOG.warn("Could not advance slot {} - no compatible function found", slotName);
+        throw new SQLException(
+                "Could not advance replication slot "
+                        + slotName
+                        + " to "
+                        + targetLsn
+                        + ": no compatible advance function succeeded",
+                lastFailure);
     }
 
     /**
@@ -1114,17 +1092,29 @@ public class WalReplicationStream {
     }
 
     /** Create a new logical replication slot with mppdb_decoding plugin. */
-    private void createSlot() throws SQLException {
+    private String createSlot() throws SQLException {
         LOG.info("Creating logical replication slot: {} with plugin: {}", slotName, pluginName);
 
-        String sql = "SELECT pg_create_logical_replication_slot(?, ?)";
+        String sql = "SELECT * FROM pg_create_logical_replication_slot(?, ?)";
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             stmt.setString(1, slotName);
             stmt.setString(2, pluginName);
-            stmt.execute();
+            if (stmt.execute()) {
+                try (ResultSet rs = stmt.getResultSet()) {
+                    if (rs != null && rs.next()) {
+                        String createdAt = rs.getString(2);
+                        LOG.info(
+                                "Successfully created replication slot '{}' at LSN {}",
+                                slotName,
+                                createdAt);
+                        return createdAt;
+                    }
+                }
+            }
         }
 
         LOG.info("Successfully created replication slot: {}", slotName);
+        return null;
     }
 
     /**
@@ -1153,6 +1143,44 @@ public class WalReplicationStream {
             }
         }
         return "0/0";
+    }
+
+    /** Return the database WAL position used as a coordinated snapshot boundary. */
+    public String getCurrentLsnPosition() throws SQLException {
+        return getCurrentLsn();
+    }
+
+    /**
+     * Acknowledge an LSN after the corresponding Flink checkpoint completes.
+     *
+     * <p>SQL fallback advances the logical slot here rather than after every peek. The replication
+     * API similarly delays its flushed position, so a task restored from the latest completed
+     * checkpoint can replay every uncommitted record.
+     */
+    public synchronized void acknowledgeLsn(String lsn) throws SQLException {
+        if (lsn == null || "0/0".equals(lsn)) {
+            return;
+        }
+        if (useReplicationApi && replicationStream != null) {
+            updateFlushedLsn(lsn);
+            try {
+                Method forceUpdateStatus =
+                        replicationStream.getClass().getMethod("forceUpdateStatus");
+                forceUpdateStatus.invoke(replicationStream);
+            } catch (Exception e) {
+                throw new SQLException("Failed to acknowledge replication LSN " + lsn, e);
+            }
+        } else {
+            advanceSlot(lsn);
+            int acknowledged = 0;
+            while (acknowledged < sqlUnacknowledgedLsns.size()
+                    && !isLsnNewer(sqlUnacknowledgedLsns.get(acknowledged), lsn)) {
+                acknowledged++;
+            }
+            if (acknowledged > 0) {
+                sqlUnacknowledgedLsns.subList(0, acknowledged).clear();
+            }
+        }
     }
 
     /** Drop the replication slot. */
